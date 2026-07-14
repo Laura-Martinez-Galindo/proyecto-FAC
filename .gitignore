@@ -1,0 +1,5 @@
+# Ignorar todo lo que haya dentro de Videos
+Videos/*
+
+# Conservar la carpeta Videos en el repositorio
+!Videos/.gitkeep
