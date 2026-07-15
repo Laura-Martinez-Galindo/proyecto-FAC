@@ -6,6 +6,7 @@ Videos/*
 
 # Entornos virtuales
 .venv-propainter/
+noise2noise_env/
 
 # ProPainter
 ProPainter/
@@ -13,7 +14,3 @@ ProPainter/
 # Videos y resultados
 prueba_propainter/
 prueba_propainter2/
-
-# Conservar noise2noise_env
-!noise2noise_env/
-!noise2noise_env/**
