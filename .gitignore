@@ -3,3 +3,17 @@ Videos/*
 
 # Conservar la carpeta Videos en el repositorio
 !Videos/.gitkeep
+
+# Entornos virtuales
+.venv-propainter/
+
+# ProPainter
+ProPainter/
+
+# Videos y resultados
+prueba_propainter/
+prueba_propainter2/
+
+# Conservar noise2noise_env
+!noise2noise_env/
+!noise2noise_env/**
