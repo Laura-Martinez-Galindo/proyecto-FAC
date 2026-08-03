@@ -13,9 +13,11 @@ import pandas as pd
 
 from tqdm import tqdm
 
+# Ruta principal del proyecto
+RUTA_PROYECTO = Path(__file__).resolve().parent.parent
 
 # Ruta del video que se desea procesar
-RUTA_VIDEO = Path("../Videos") / "video30min-11to22.mp4"
+RUTA_VIDEO = RUTA_PROYECTO / "Videos" / "video30min-11to22.mp4"
 
 # Cantidad de imágenes que se extraerán por cada segundo de video
 FRAMES_POR_SEGUNDO = 5.0

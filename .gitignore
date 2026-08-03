@@ -1,16 +1,42 @@
-# Ignorar todo lo que haya dentro de Videos
+# Videos: ignorar datos y resultados
 Videos/*
 
-# Conservar la carpeta Videos en el repositorio
+# Conservar la carpeta Videos
 !Videos/.gitkeep
 
+# Permitir recorrer las carpetas internas
+!Videos/**/
+
+# Ignorar todo su contenido
+Videos/**/*
+
+# Conservar únicamente el resumen de cada video
+!Videos/**/resumen.xlsx
+
 # Entornos virtuales
+fac_env311/
 .venv-propainter/
 noise2noise_env/
+.venv/
+venv/
 
-# ProPainter
+# Dependencias pesadas
 ProPainter/
 
-# Videos y resultados
+# Pruebas y resultados locales
 prueba_propainter/
 prueba_propainter2/
+
+# Python y notebooks
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Logs N2N
+Jobs/n2n_original-log.o*
+Jobs/n2n_original-err.o*
+Jobs/n2n_sin_hud-log.o*
+Jobs/n2n_sin_hud-err.o*
+
+# IDs temporales de SLURM
+Jobs/jobs_n2n_actuales.txt
