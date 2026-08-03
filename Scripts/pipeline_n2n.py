@@ -413,7 +413,6 @@ class HistorialPerdida(Callback):
         }
         self.registros.append(registro)
         pd.DataFrame(self.registros).to_csv(self.ruta_csv, index=False)
-        trainer.save_checkpoint(self.ruta_modelo)
         print(
             f"Epoca {registro['epoca'] + 1}/{trainer.max_epochs} terminada | "
             f"train_loss={registro['train_loss']:.6f} | "
@@ -463,14 +462,50 @@ def entrenar(modo):
 
     if proceso_principal:
         duracion_minutos = (time.time() - inicio) / 60.0
-        (carpeta_salida / "tiempo_entrenamiento_minutos.txt").write_text(
-            f"{duracion_minutos:.6f}\n", encoding="utf-8"
+
+        candidatos_last = sorted(
+            carpeta_trabajo.rglob("*last.ckpt"),
+            key=lambda ruta_checkpoint: ruta_checkpoint.stat().st_mtime,
         )
-        if not (carpeta_salida / "modelo.ckpt").exists():
-            raise RuntimeError("No se guardo modelo.ckpt")
-        shutil.rmtree(carpeta_trabajo, ignore_errors=True)
-        print(f"Modelo: {carpeta_salida / 'modelo.ckpt'}", flush=True)
-        print(f"Entrenamiento: {duracion_minutos:.2f} min", flush=True)
+
+        if candidatos_last:
+            checkpoint_final = candidatos_last[-1]
+        else:
+            candidatos = sorted(
+                carpeta_trabajo.rglob("*.ckpt"),
+                key=lambda ruta_checkpoint: ruta_checkpoint.stat().st_mtime,
+            )
+
+            if not candidatos:
+                raise RuntimeError(
+                    f"No se encontro ningun checkpoint en {carpeta_trabajo}"
+                )
+
+            checkpoint_final = candidatos[-1]
+
+        shutil.copy2(
+            checkpoint_final,
+            carpeta_salida / "modelo.ckpt",
+        )
+
+        (carpeta_salida / "tiempo_entrenamiento_minutos.txt").write_text(
+            f"{duracion_minutos:.6f}\n",
+            encoding="utf-8",
+        )
+
+        shutil.rmtree(
+            carpeta_trabajo,
+            ignore_errors=True,
+        )
+
+        print(
+            f"Modelo final: {carpeta_salida / 'modelo.ckpt'}",
+            flush=True,
+        )
+        print(
+            f"Entrenamiento: {duracion_minutos:.2f} min",
+            flush=True,
+        )
 
 
 # %% 5. Inferencia
