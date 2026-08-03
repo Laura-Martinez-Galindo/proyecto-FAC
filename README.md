@@ -14,7 +14,7 @@ proyecto-FAC/
 │   └── pipeline_n2n_sin_hud.sh
 ├── ProPainter/                    # Dependencia pesada, ignorada por Git
 ├── Scripts/
-│   ├── pipeline_n2n_video.py
+│   ├── pipeline_n2n.py
 │   ├── limpiar_hud.py
 │   ├── extraer_frames.py
 │   └── otros scripts del proyecto
@@ -77,7 +77,7 @@ Cada job solicita dos GPU, 16 CPU y 150 GB de RAM.
 Desde la raíz de `proyecto-FAC`:
 
 ```bash
-fac_env311/bin/python -m py_compile Scripts/pipeline_n2n_video.py
+fac_env311/bin/python -m py_compile Scripts/pipeline_n2n.py
 bash -n Jobs/pipeline_n2n_original.sh
 bash -n Jobs/pipeline_n2n_sin_hud.sh
 sbatch --test-only Jobs/pipeline_n2n_original.sh

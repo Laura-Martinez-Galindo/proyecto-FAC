@@ -29,20 +29,20 @@ echo "Python: ${PYTHON_ENV}"
 echo "Nodo: $(hostname)"
 echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-no_definido}"
 
-"${PYTHON_ENV}" -m py_compile "Scripts/pipeline_n2n_video.py"
-"${PYTHON_ENV}" -u "Scripts/pipeline_n2n_video.py" --modo sin_hud --etapa preparar --reiniciar
+"${PYTHON_ENV}" -m py_compile "Scripts/pipeline_n2n.py"
+"${PYTHON_ENV}" -u "Scripts/pipeline_n2n.py" --modo sin_hud --etapa preparar --reiniciar
 
 rm -rf "Videos/video30min-11to22/n2n/.careamics_trabajo"
 mkdir -p "Videos/video30min-11to22/n2n/.careamics_trabajo"
 
 srun --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
-"${PYTHON_ENV}" -u "Scripts/pipeline_n2n_video.py" --modo sin_hud --etapa entrenar
+"${PYTHON_ENV}" -u "Scripts/pipeline_n2n.py" --modo sin_hud --etapa entrenar
 
 # Esta etapa empieza en un proceso nuevo, despues de liberar los procesos DDP.
 srun --nodes=1 --ntasks=1 --cpus-per-task=8 \
-"${PYTHON_ENV}" -u "Scripts/pipeline_n2n_video.py" --modo sin_hud --etapa inferir
+"${PYTHON_ENV}" -u "Scripts/pipeline_n2n.py" --modo sin_hud --etapa inferir
 
 srun --nodes=1 --ntasks=1 --cpus-per-task=8 \
-"${PYTHON_ENV}" -u "Scripts/pipeline_n2n_video.py" --modo sin_hud --etapa metricas
+"${PYTHON_ENV}" -u "Scripts/pipeline_n2n.py" --modo sin_hud --etapa metricas
 
 echo "Fin: $(date)"

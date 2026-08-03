@@ -661,7 +661,7 @@ def calcular_metricas(modo):
                 "reduccion_sigma (?)": np.nan,
                 "residual_RMS (?)": np.nan,
                 "autocorrelacion_residual_abs (?)": np.nan,
-                "retencion_nitidez (˜1)": np.nan,
+                "retencion_nitidez (~1)": np.nan,
                 "tiempo_entrenamiento_minutos (?)": np.nan,
                 "tiempo_inferencia_minutos (?)": np.nan,
             },
@@ -678,7 +678,7 @@ def calcular_metricas(modo):
                 "autocorrelacion_residual_abs (?)": metricas[
                     "residual_autocorrelacion_x"
                 ].abs().mean(),
-                "retencion_nitidez (˜1)": metricas["retencion_nitidez"].mean(),
+                "retencion_nitidez (~1)": metricas["retencion_nitidez"].mean(),
                 "tiempo_entrenamiento_minutos (?)": tiempo_entrenamiento,
                 "tiempo_inferencia_minutos (?)": tiempo_inferencia,
             },
