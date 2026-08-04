@@ -36,7 +36,7 @@ CARPETA_VIDEO = RUTA_PROYECTO / "Videos" / "video30min-11to22"
 
 SEMILLA = 42
 PORCENTAJE_VALIDACION = 0.05
-EPOCAS = int(os.environ.get("N2N_EPOCAS", "50"))
+EPOCAS = 50
 PASOS_POR_EPOCA = 2000
 TAMANO_PARCHE = (128, 128)
 TAMANO_LOTE = 8
@@ -332,7 +332,6 @@ def crear_configuracion(nombre_experimento, entrenamiento):
     config.data_config.val_dataloader_params["num_workers"] = workers
     config.data_config.pred_dataloader_params["num_workers"] = 0
     config.data_config.pred_dataloader_params["persistent_workers"] = False
-    config.data_config.pred_dataloader_params["prefetch_factor"] = None
     config.algorithm_config.model.depth = PROFUNDIDAD_UNET
     config.algorithm_config.model.num_channels_init = CANALES_INICIALES
     config.algorithm_config.model.residual = CONEXION_RESIDUAL

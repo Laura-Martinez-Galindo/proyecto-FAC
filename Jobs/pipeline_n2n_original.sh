@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 #SBATCH --job-name=n2n_original
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
@@ -7,13 +8,16 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:nvidia:2
 #SBATCH --mem=150G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=0-08:00:00
 #SBATCH --output=Jobs/logs/n2n_original-log.o%j
 #SBATCH --error=Jobs/logs/n2n_original-err.o%j
 
 set -euo pipefail
+
 PYTHON_ENV="/hpcfs/home/ing_sistemas/lf.martinezg1/proyecto-FAC/fac_env311/bin/python"
+
 cd "${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR no esta definido}"
+
 mkdir -p "Jobs/logs"
 
 export PYTHONUNBUFFERED=1
@@ -24,25 +28,79 @@ export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export NCCL_DEBUG=WARN
 
+# Prueba integral corta. Para la corrida final, cambiar a 50.
+export N2N_EPOCAS=5
+
+echo "============================================================"
 echo "Inicio: $(date)"
-echo "Python: ${PYTHON_ENV}"
+echo "Job ID: ${SLURM_JOB_ID:-no_definido}"
 echo "Nodo: $(hostname)"
+echo "Python: ${PYTHON_ENV}"
 echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-no_definido}"
+echo "Modo: original"
+echo "Épocas solicitadas: ${N2N_EPOCAS}"
+echo "============================================================"
 
-"${PYTHON_ENV}" -m py_compile "Scripts/pipeline_n2n.py"
-"${PYTHON_ENV}" -u "Scripts/pipeline_n2n.py" --modo original --etapa preparar --reiniciar
+if [ ! -x "${PYTHON_ENV}" ]; then
+    echo "ERROR: no existe el Python del entorno: ${PYTHON_ENV}"
+    exit 1
+fi
 
-rm -rf "Videos/video30min-11to22/n2n/.careamics_trabajo"
-mkdir -p "Videos/video30min-11to22/n2n/.careamics_trabajo"
+"${PYTHON_ENV}" -m py_compile \
+"Scripts/pipeline_n2n.py"
 
-srun --nodes=1 --ntasks=2 --ntasks-per-node=2 --cpus-per-task=8 \
-"${PYTHON_ENV}" -u "Scripts/pipeline_n2n.py" --modo original --etapa entrenar
+echo
+echo "Preparando parejas de entrenamiento y validación"
 
-# Esta etapa empieza en un proceso nuevo, despues de liberar los procesos DDP.
-srun --nodes=1 --ntasks=1 --cpus-per-task=8 \
-"${PYTHON_ENV}" -u "Scripts/pipeline_n2n.py" --modo original --etapa inferir
+"${PYTHON_ENV}" -u \
+"Scripts/pipeline_n2n.py" \
+--modo original \
+--etapa preparar \
+--reiniciar
 
-srun --nodes=1 --ntasks=1 --cpus-per-task=8 \
-"${PYTHON_ENV}" -u "Scripts/pipeline_n2n.py" --modo original --etapa metricas
+echo
+echo "Entrenando N2N original con ${N2N_EPOCAS} épocas"
 
-echo "Fin: $(date)"
+srun \
+--nodes=1 \
+--ntasks=2 \
+--ntasks-per-node=2 \
+--cpus-per-task=8 \
+"${PYTHON_ENV}" -u \
+"Scripts/pipeline_n2n.py" \
+--modo original \
+--etapa entrenar
+
+echo
+echo "Entrenamiento terminado. Iniciando inferencia en un proceso nuevo."
+
+srun \
+--nodes=1 \
+--ntasks=1 \
+--cpus-per-task=8 \
+"${PYTHON_ENV}" -u \
+"Scripts/pipeline_n2n.py" \
+--modo original \
+--etapa inferir
+
+echo
+echo "Inferencia terminada. Calculando métricas."
+
+srun \
+--nodes=1 \
+--ntasks=1 \
+--cpus-per-task=8 \
+"${PYTHON_ENV}" -u \
+"Scripts/pipeline_n2n.py" \
+--modo original \
+--etapa metricas
+
+echo
+echo "============================================================"
+echo "Pipeline original terminado correctamente: $(date)"
+echo "Épocas: ${N2N_EPOCAS}"
+echo "Modelo: Videos/video30min-11to22/n2n/modelo.ckpt"
+echo "Frames: Videos/video30min-11to22/n2n/clean"
+echo "Métricas: Videos/video30min-11to22/n2n/metricas_frames.csv"
+echo "Resumen: Videos/video30min-11to22/resumen.xlsx"
+echo "============================================================"

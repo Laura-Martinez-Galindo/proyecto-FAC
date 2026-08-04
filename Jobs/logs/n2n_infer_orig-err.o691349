@@ -1,0 +1,3 @@
+Traceback (most recent call last):
+  File "<stdin>", line 51, in <module>
+RuntimeError: El checkpoint contiene NaN o infinito. No se ejecutará la inferencia.

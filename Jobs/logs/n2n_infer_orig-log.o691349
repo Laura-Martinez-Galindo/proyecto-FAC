@@ -1,0 +1,36 @@
+============================================================
+Inicio: Tue Aug  4 10:10:52 -05 2026
+Job ID: 691349
+Nodo: nodei-gpu-2
+Python: /hpcfs/home/ing_sistemas/lf.martinezg1/proyecto-FAC/fac_env311/bin/python
+CUDA_VISIBLE_DEVICES: 0
+Checkpoint: Videos/video30min-11to22/n2n/modelo.ckpt
+============================================================
+
+Verificando que el checkpoint no contenga NaN ni infinito
+Época: 49
+Paso global: 100000
+Parámetros revisados: 12,378,597
+Tensores con NaN: 38
+Tensores con infinito: 0
+Primeros tensores con NaN:
+  model.encoder.encoder_blocks.0.conv1.weight
+  model.encoder.encoder_blocks.0.conv1.bias
+  model.encoder.encoder_blocks.0.conv2.weight
+  model.encoder.encoder_blocks.0.conv2.bias
+  model.encoder.encoder_blocks.2.conv1.weight
+  model.encoder.encoder_blocks.2.conv1.bias
+  model.encoder.encoder_blocks.2.conv2.weight
+  model.encoder.encoder_blocks.2.conv2.bias
+  model.encoder.encoder_blocks.4.conv1.weight
+  model.encoder.encoder_blocks.4.conv1.bias
+  model.encoder.encoder_blocks.4.conv2.weight
+  model.encoder.encoder_blocks.4.conv2.bias
+  model.encoder.encoder_blocks.6.conv1.weight
+  model.encoder.encoder_blocks.6.conv1.bias
+  model.encoder.encoder_blocks.6.conv2.weight
+  model.encoder.encoder_blocks.6.conv2.bias
+  model.decoder.bottleneck.conv1.weight
+  model.decoder.bottleneck.conv1.bias
+  model.decoder.bottleneck.conv2.weight
+  model.decoder.bottleneck.conv2.bias
