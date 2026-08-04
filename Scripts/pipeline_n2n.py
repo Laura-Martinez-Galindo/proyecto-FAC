@@ -525,82 +525,253 @@ def entrenar(modo):
 
 
 # %% 5. Inferencia
-def extraer_prediccion(resultado):
+def extraer_predicciones(resultado):
     if isinstance(resultado, tuple):
         resultado = resultado[0]
-    if isinstance(resultado, list):
-        if not resultado:
-            raise RuntimeError("CAREamics devolvio una lista vacia")
-        resultado = resultado[0]
+
     if isinstance(resultado, torch.Tensor):
         resultado = resultado.detach().cpu().numpy()
-    if isinstance(resultado, np.ndarray) and resultado.ndim == 4:
-        resultado = resultado[0]
 
-    resultado = np.asarray(resultado)
+    if isinstance(resultado, np.ndarray):
+        if resultado.ndim == 3:
+            predicciones = [resultado]
+        elif resultado.ndim == 4:
+            predicciones = [
+                resultado[indice]
+                for indice in range(resultado.shape[0])
+            ]
+        else:
+            raise RuntimeError(
+                "Forma de predicción no reconocida: "
+                f"{resultado.shape}"
+            )
+    elif isinstance(resultado, list):
+        predicciones = []
 
-    if not np.isfinite(resultado).all():
-        cantidad_nan = int(np.isnan(resultado).sum())
-        cantidad_inf = int(np.isinf(resultado).sum())
+        for prediccion in resultado:
+            if isinstance(prediccion, torch.Tensor):
+                prediccion = (
+                    prediccion.detach().cpu().numpy()
+                )
 
+            predicciones.append(prediccion)
+    else:
         raise RuntimeError(
-            "La predicción contiene valores inválidos: "
-            f"NaN={cantidad_nan}, infinito={cantidad_inf}. "
-            "El checkpoint no es utilizable."
+            "Tipo de predicción no reconocido: "
+            f"{type(resultado)}"
         )
 
-    return convertir_uint8(resultado)
+    predicciones_uint8 = []
+
+    for posicion, prediccion in enumerate(predicciones):
+        prediccion = np.asarray(prediccion)
+
+        while (
+            prediccion.ndim > 3
+            and prediccion.shape[0] == 1
+        ):
+            prediccion = prediccion[0]
+
+        if not np.isfinite(prediccion).all():
+            cantidad_nan = int(
+                np.isnan(prediccion).sum()
+            )
+            cantidad_inf = int(
+                np.isinf(prediccion).sum()
+            )
+
+            raise RuntimeError(
+                f"La predicción {posicion} contiene "
+                f"NaN={cantidad_nan} e "
+                f"infinito={cantidad_inf}."
+            )
+
+        predicciones_uint8.append(
+            convertir_uint8(prediccion)
+        )
+
+    return predicciones_uint8
 
 
 def inferir(modo):
-    carpeta_fuente, carpeta_salida = obtener_rutas(modo)
+    carpeta_fuente, carpeta_salida = obtener_rutas(
+        modo
+    )
     checkpoint = carpeta_salida / "modelo.ckpt"
     carpeta_clean = carpeta_salida / "clean"
-    carpeta_temporal = carpeta_salida / ".inferencia_temporal"
+    carpeta_temporal = (
+        carpeta_salida / ".inferencia_temporal"
+    )
 
     if not checkpoint.exists():
-        raise FileNotFoundError(f"No existe: {checkpoint}")
+        raise FileNotFoundError(
+            f"No existe: {checkpoint}"
+        )
 
     if carpeta_temporal.exists():
         shutil.rmtree(carpeta_temporal)
+
     carpeta_temporal.mkdir(parents=True)
-    carpeta_clean.mkdir(parents=True, exist_ok=True)
+    carpeta_clean.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     limpiar_memoria()
-    config = crear_configuracion(f"n2n_{modo}_inferencia", entrenamiento=False)
+
+    config = crear_configuracion(
+        f"n2n_{modo}_inferencia",
+        entrenamiento=False,
+    )
+    config.data_config.num_workers = 0
+    config.data_config.pred_dataloader_params[
+        "num_workers"
+    ] = 0
+    config.data_config.pred_dataloader_params[
+        "persistent_workers"
+    ] = False
+    config.data_config.pred_dataloader_params[
+        "prefetch_factor"
+    ] = None
+
     careamist = CAREamist(config=config)
     frames = listar_imagenes(carpeta_fuente)
+
+    tamano_bloque = 16
+    cantidad_bloques = (
+        len(frames) + tamano_bloque - 1
+    ) // tamano_bloque
+
     inicio = time.time()
 
-    for frame in tqdm(frames, desc=f"Inferencia {modo}", unit="frame"):
-        ruta_salida = carpeta_clean / f"{frame.stem}.png"
-        if ruta_salida.exists():
+    for indice_bloque in tqdm(
+        range(cantidad_bloques),
+        desc=f"Inferencia {modo}",
+        unit="bloque",
+    ):
+        inicio_bloque = (
+            indice_bloque * tamano_bloque
+        )
+        fin_bloque = min(
+            inicio_bloque + tamano_bloque,
+            len(frames),
+        )
+        frames_bloque = frames[
+            inicio_bloque:fin_bloque
+        ]
+
+        frames_pendientes = [
+            frame
+            for frame in frames_bloque
+            if not (
+                carpeta_clean
+                / f"{frame.stem}.png"
+            ).exists()
+        ]
+
+        if not frames_pendientes:
             continue
 
-        entrada_tiff = carpeta_temporal / f"{frame.stem}.tif"
-        guardar_tiff(entrada_tiff, leer_rgb(frame))
+        carpeta_bloque = (
+            carpeta_temporal
+            / f"bloque_{indice_bloque:05d}"
+        )
+
+        if carpeta_bloque.exists():
+            shutil.rmtree(carpeta_bloque)
+
+        carpeta_bloque.mkdir(parents=True)
+
+        for frame in frames_pendientes:
+            guardar_tiff(
+                carpeta_bloque
+                / f"{frame.stem}.tif",
+                leer_rgb(frame),
+            )
+
         resultado = careamist.predict(
-            pred_data=str(entrada_tiff),
+            pred_data=str(carpeta_bloque),
             checkpoint=str(checkpoint),
             tile_size=TAMANO_TILE,
             tile_overlap=SOLAPAMIENTO_TILE,
         )
-        prediccion = extraer_prediccion(resultado)
-        cv2.imwrite(str(ruta_salida), cv2.cvtColor(prediccion, cv2.COLOR_RGB2BGR))
-        entrada_tiff.unlink(missing_ok=True)
-        del resultado, prediccion
+        predicciones = extraer_predicciones(
+            resultado
+        )
+
+        if (
+            len(predicciones)
+            != len(frames_pendientes)
+        ):
+            raise RuntimeError(
+                "CAREamics devolvió "
+                f"{len(predicciones)} predicciones "
+                f"para {len(frames_pendientes)} "
+                "frames."
+            )
+
+        for frame, prediccion in zip(
+            frames_pendientes,
+            predicciones,
+        ):
+            ruta_salida = (
+                carpeta_clean
+                / f"{frame.stem}.png"
+            )
+
+            guardada = cv2.imwrite(
+                str(ruta_salida),
+                cv2.cvtColor(
+                    prediccion,
+                    cv2.COLOR_RGB2BGR,
+                ),
+            )
+
+            if not guardada:
+                raise RuntimeError(
+                    "No se pudo guardar: "
+                    f"{ruta_salida}"
+                )
+
+        shutil.rmtree(carpeta_bloque)
+
+        del resultado
+        del predicciones
+
         limpiar_memoria()
 
-    duracion_minutos = (time.time() - inicio) / 60.0
-    shutil.rmtree(carpeta_temporal, ignore_errors=True)
+    duracion_minutos = (
+        time.time() - inicio
+    ) / 60.0
 
-    if len(listar_imagenes(carpeta_clean)) != len(frames):
-        raise RuntimeError("La cantidad de frames clean no coincide con la fuente")
-
-    (carpeta_salida / "tiempo_inferencia_minutos.txt").write_text(
-        f"{duracion_minutos:.6f}\n", encoding="utf-8"
+    shutil.rmtree(
+        carpeta_temporal,
+        ignore_errors=True,
     )
-    print(f"Inferencia: {duracion_minutos:.2f} min", flush=True)
+
+    cantidad_clean = len(
+        listar_imagenes(carpeta_clean)
+    )
+
+    if cantidad_clean != len(frames):
+        raise RuntimeError(
+            f"Se esperaban {len(frames)} "
+            f"frames clean y se encontraron "
+            f"{cantidad_clean}."
+        )
+
+    (
+        carpeta_salida
+        / "tiempo_inferencia_minutos.txt"
+    ).write_text(
+        f"{duracion_minutos:.6f}\n",
+        encoding="utf-8",
+    )
+
+    print(
+        f"Inferencia: {duracion_minutos:.2f} min",
+        flush=True,
+    )
 
 
 # %% 6. Metricas
@@ -717,34 +888,34 @@ def calcular_metricas(modo):
             {
                 "conjunto": etiqueta_original,
                 "cantidad_frames": len(metricas),
-                "NIQE (?)": metricas["niqe_original"].mean(),
-                "BRISQUE (?)": metricas["brisque_original"].mean(),
-                "ruido_sigma (?)": metricas["ruido_sigma_original"].mean(),
-                "nitidez_laplaciana": metricas["nitidez_original"].mean(),
-                "contraste": metricas["contraste_original"].mean(),
-                "reduccion_sigma (?)": np.nan,
-                "residual_RMS (?)": np.nan,
-                "autocorrelacion_residual_abs (?)": np.nan,
-                "retencion_nitidez (~1)": np.nan,
-                "tiempo_entrenamiento_minutos (?)": np.nan,
-                "tiempo_inferencia_minutos (?)": np.nan,
+                "NIQE (menor)": metricas["niqe_original"].mean(),
+                "BRISQUE (menor)": metricas["brisque_original"].mean(),
+                "ruido_sigma (menor)": metricas["ruido_sigma_original"].mean(),
+                "nitidez_laplaciana (comparar)": metricas["nitidez_original"].mean(),
+                "contraste (comparar)": metricas["contraste_original"].mean(),
+                "reduccion_sigma (mayor)": np.nan,
+                "residual_RMS (diagnostico)": np.nan,
+                "autocorrelacion_residual_abs (menor)": np.nan,
+                "retencion_nitidez (cercano a 1)": np.nan,
+                "tiempo_entrenamiento_minutos (menor)": np.nan,
+                "tiempo_inferencia_minutos (menor)": np.nan,
             },
             {
                 "conjunto": etiqueta_clean,
                 "cantidad_frames": len(metricas),
-                "NIQE (?)": metricas["niqe_clean"].mean(),
-                "BRISQUE (?)": metricas["brisque_clean"].mean(),
-                "ruido_sigma (?)": metricas["ruido_sigma_clean"].mean(),
-                "nitidez_laplaciana": metricas["nitidez_clean"].mean(),
-                "contraste": metricas["contraste_clean"].mean(),
-                "reduccion_sigma (?)": metricas["reduccion_sigma"].mean(),
-                "residual_RMS (?)": metricas["residual_rms"].mean(),
-                "autocorrelacion_residual_abs (?)": metricas[
+                "NIQE (menor)": metricas["niqe_clean"].mean(),
+                "BRISQUE (menor)": metricas["brisque_clean"].mean(),
+                "ruido_sigma (menor)": metricas["ruido_sigma_clean"].mean(),
+                "nitidez_laplaciana (comparar)": metricas["nitidez_clean"].mean(),
+                "contraste (comparar)": metricas["contraste_clean"].mean(),
+                "reduccion_sigma (mayor)": metricas["reduccion_sigma"].mean(),
+                "residual_RMS (diagnostico)": metricas["residual_rms"].mean(),
+                "autocorrelacion_residual_abs (menor)": metricas[
                     "residual_autocorrelacion_x"
                 ].abs().mean(),
-                "retencion_nitidez (~1)": metricas["retencion_nitidez"].mean(),
-                "tiempo_entrenamiento_minutos (?)": tiempo_entrenamiento,
-                "tiempo_inferencia_minutos (?)": tiempo_inferencia,
+                "retencion_nitidez (cercano a 1)": metricas["retencion_nitidez"].mean(),
+                "tiempo_entrenamiento_minutos (menor)": tiempo_entrenamiento,
+                "tiempo_inferencia_minutos (menor)": tiempo_inferencia,
             },
         ]
     )
