@@ -331,6 +331,7 @@ def crear_configuracion(nombre_experimento, entrenamiento):
     config.data_config.train_dataloader_params["num_workers"] = workers
     config.data_config.val_dataloader_params["num_workers"] = workers
     config.data_config.pred_dataloader_params["num_workers"] = 0
+    config.data_config.pred_dataloader_params["persistent_workers"] = False
     config.algorithm_config.model.depth = PROFUNDIDAD_UNET
     config.algorithm_config.model.num_channels_init = CANALES_INICIALES
     config.algorithm_config.model.residual = CONEXION_RESIDUAL
@@ -343,9 +344,11 @@ def crear_configuracion(nombre_experimento, entrenamiento):
                 "accelerator": "gpu",
                 "devices": 2,
                 "strategy": "ddp_find_unused_parameters_true",
-                "precision": "16-mixed",
+                "precision": "32-true",
                 "benchmark": True,
                 "deterministic": False,
+                "gradient_clip_val": 1.0,
+                "gradient_clip_algorithm": "norm",
                 "limit_train_batches": PASOS_POR_EPOCA,
                 "enable_progress_bar": False,
                 "log_every_n_steps": 50,
@@ -361,7 +364,7 @@ def crear_configuracion(nombre_experimento, entrenamiento):
                 "accelerator": "gpu",
                 "devices": 1,
                 "strategy": "auto",
-                "precision": "16-mixed",
+                "precision": "32-true",
                 "enable_progress_bar": False,
             }
         )
@@ -411,6 +414,18 @@ class HistorialPerdida(Callback):
             "val_loss": obtener_valor(("val_loss", "validation_loss")),
             "duracion_minutos": duracion_minutos,
         }
+
+        perdidas = [
+            registro["train_loss"],
+            registro["val_loss"],
+        ]
+
+        if not all(np.isfinite(valor) for valor in perdidas):
+            raise RuntimeError(
+                "Entrenamiento detenido porque train_loss o val_loss "
+                "contiene NaN o infinito. Se conserva el último "
+                "checkpoint válido."
+            )
         self.registros.append(registro)
         pd.DataFrame(self.registros).to_csv(self.ruta_csv, index=False)
         print(
@@ -520,6 +535,19 @@ def extraer_prediccion(resultado):
         resultado = resultado.detach().cpu().numpy()
     if isinstance(resultado, np.ndarray) and resultado.ndim == 4:
         resultado = resultado[0]
+
+    resultado = np.asarray(resultado)
+
+    if not np.isfinite(resultado).all():
+        cantidad_nan = int(np.isnan(resultado).sum())
+        cantidad_inf = int(np.isinf(resultado).sum())
+
+        raise RuntimeError(
+            "La predicción contiene valores inválidos: "
+            f"NaN={cantidad_nan}, infinito={cantidad_inf}. "
+            "El checkpoint no es utilizable."
+        )
+
     return convertir_uint8(resultado)
 
 
