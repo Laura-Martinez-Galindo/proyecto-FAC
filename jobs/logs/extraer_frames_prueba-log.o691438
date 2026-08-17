@@ -1,0 +1,20 @@
+============================================================
+Inicio: Tue Aug  4 18:41:14 -05 2026
+Job ID: 691438
+Nodo: nodei-7
+Python: /hpcfs/home/ing_sistemas/lf.martinezg1/proyecto-FAC/fac_env311/bin/python
+============================================================
+Video: /hpcfs/home/ing_sistemas/lf.martinezg1/proyecto-FAC/Videos/video30min-11to22.mp4
+FPS original: 30.000000
+Frames declarados: 19800
+Resolución: 1920 x 1080
+Salida: /hpcfs/home/ing_sistemas/lf.martinezg1/proyecto-FAC/Videos/video30min-11to22/frames_prueba
+
+Frames extraídos: 19800
+Tiempo: 59.98 minutos
+FPS procesados: 5.50
+Carpeta: /hpcfs/home/ing_sistemas/lf.martinezg1/proyecto-FAC/Videos/video30min-11to22/frames_prueba
+
+32G	Videos/video30min-11to22/frames_prueba
+
+Finalización correcta: Tue Aug  4 19:41:16 -05 2026
