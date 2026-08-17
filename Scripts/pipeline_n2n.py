@@ -131,9 +131,38 @@ def guardar_tiff(ruta, imagen):
 
 
 def obtener_rutas(modo):
+    fuente_personalizada = os.environ.get(
+        "N2N_CARPETA_FUENTE"
+    )
+    salida_personalizada = os.environ.get(
+        "N2N_CARPETA_SALIDA"
+    )
+
+    if fuente_personalizada or salida_personalizada:
+        if not (
+            fuente_personalizada
+            and salida_personalizada
+        ):
+            raise RuntimeError(
+                "N2N_CARPETA_FUENTE y "
+                "N2N_CARPETA_SALIDA deben definirse juntas."
+            )
+
+        return (
+            CARPETA_VIDEO / fuente_personalizada,
+            CARPETA_VIDEO / salida_personalizada,
+        )
+
     if modo == "original":
-        return CARPETA_VIDEO / "frames", CARPETA_VIDEO / "n2n"
-    return CARPETA_VIDEO / "frames_sin_hud", CARPETA_VIDEO / "n2n_sin_hud"
+        return (
+            CARPETA_VIDEO / "frames",
+            CARPETA_VIDEO / "n2n",
+        )
+
+    return (
+        CARPETA_VIDEO / "frames_sin_hud",
+        CARPETA_VIDEO / "n2n_sin_hud",
+    )
 
 
 def limpiar_memoria():
@@ -879,9 +908,21 @@ def calcular_metricas(modo):
         (carpeta_salida / "tiempo_inferencia_minutos.txt").read_text().strip()
     )
 
-    etiqueta_original = "frames_original" if modo == "original" else "frames_sin_hud"
-    etiqueta_clean = (
-        "frames_n2n_original" if modo == "original" else "frames_n2n_sin_hud"
+    etiqueta_original = os.environ.get(
+        "N2N_ETIQUETA_ORIGINAL",
+        (
+            "frames_original"
+            if modo == "original"
+            else "frames_sin_hud"
+        ),
+    )
+    etiqueta_clean = os.environ.get(
+        "N2N_ETIQUETA_CLEAN",
+        (
+            "frames_n2n_original"
+            if modo == "original"
+            else "frames_n2n_sin_hud"
+        ),
     )
     filas = pd.DataFrame(
         [

@@ -40,3 +40,6 @@ Jobs/n2n_sin_hud-err.o*
 
 # IDs temporales de SLURM
 Jobs/jobs_n2n_actuales.txt
+
+# Logs de SLURM
+Jobs/logs/
