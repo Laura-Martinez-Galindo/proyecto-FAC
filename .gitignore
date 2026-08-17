@@ -1,45 +1,44 @@
-# Videos: ignorar datos y resultados
-Videos/*
+# Videos y resultados generados
+videos/*
 
-# Conservar la carpeta Videos
-!Videos/.gitkeep
+# Conservar las carpetas principales de cada video
+!videos/video1/
+!videos/video2/
+!videos/video3/
 
-# Permitir recorrer las carpetas internas
-!Videos/**/
+# Ignorar su contenido
+videos/video1/*
+videos/video2/*
+videos/video3/*
 
-# Ignorar todo su contenido
-Videos/**/*
+# Conservar las carpetas mediante archivos vacíos
+!videos/video1/.gitkeep
+!videos/video2/.gitkeep
+!videos/video3/.gitkeep
 
-# Conservar únicamente el resumen de cada video
-!Videos/**/resumen.xlsx
-
-# Entornos virtuales
+# Entorno virtual
 fac_env311/
-.venv-propainter/
-noise2noise_env/
-.venv/
-venv/
 
-# Dependencias pesadas
+# Dependencia externa pesada
 ProPainter/
 
-# Pruebas y resultados locales
-prueba_propainter/
-prueba_propainter2/
+# Archivos antiguos o temporales
+cache/*
+!cache/.gitkeep
 
-# Python y notebooks
+# Python y Jupyter
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 
-# Logs N2N
-Jobs/n2n_original-log.o*
-Jobs/n2n_original-err.o*
-Jobs/n2n_sin_hud-log.o*
-Jobs/n2n_sin_hud-err.o*
-
-# IDs temporales de SLURM
-Jobs/jobs_n2n_actuales.txt
-
 # Logs de SLURM
-Jobs/logs/
+jobs/logs/
+jobs/*.out
+jobs/*.err
+jobs/slurm-*.out
+jobs/*-log.o*
+jobs/*-err.o*
+
+# Archivos temporales
+*.tmp
+*.temp

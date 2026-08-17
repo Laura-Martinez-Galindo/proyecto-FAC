@@ -1,0 +1,14 @@
+{
+  "video1": {
+    "archivo_original": "video30min-11to22.mp4",
+    "ruta": "videos/video1/original/video30min-11to22.mp4"
+  },
+  "video2": {
+    "archivo_original": "VideoCodefest_008-46min.avi",
+    "ruta": "videos/video2/original/VideoCodefest_008-46min.avi"
+  },
+  "video3": {
+    "archivo_original": "video_2hour.mp4",
+    "ruta": "videos/video3/original/video_2hour.mp4"
+  }
+}
