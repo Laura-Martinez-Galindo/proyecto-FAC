@@ -1,7 +1,157 @@
 {
   "video1": {
     "archivo_original": "video30min-11to22.mp4",
-    "ruta": "videos/video1/original/video30min-11to22.mp4"
+    "ruta": "videos/video1/original/video30min-11to22.mp4",
+    "extraccion": {
+      "inicio": 0.0,
+      "fin": 660.0,
+      "fps": 30.0,
+      "compresion_png": 3,
+      "estado": "completada",
+      "carpeta_salida": "videos/video1/frames_originales",
+      "frames_extraidos": 19800,
+      "fecha_ejecucion": "2026-08-19T22:57:39-05:00",
+      "tiempo_ejecucion_minutos": 61.91312593743205
+    },
+    "metadatos": {
+      "archivo": "video30min-11to22.mp4",
+      "ruta": "videos/video1/original/video30min-11to22.mp4",
+      "codec": "h264",
+      "resolucion": {
+        "ancho": 1920,
+        "alto": 1080
+      },
+      "fps_original": 30.0,
+      "total_frames": 19800,
+      "duracion_segundos": 660.0
+    },
+    "hud": {
+      "parametros": {
+        "frames_por_bloque": 250,
+        "rangos_hsv": {
+          "verde": {
+            "h_min": 35,
+            "h_max": 95,
+            "s_min": 60,
+            "v_min": 60
+          },
+          "rojo_1": {
+            "h_min": 0,
+            "h_max": 15,
+            "s_min": 60,
+            "v_min": 60
+          },
+          "rojo_2": {
+            "h_min": 165,
+            "h_max": 179,
+            "s_min": 60,
+            "v_min": 60
+          }
+        },
+        "umbrales_frecuencia": {
+          "estricto": 0.3,
+          "hud_superior": 0.1,
+          "brujula": 0.08,
+          "hud_inferior": 0.1,
+          "panel_lateral": 0.18,
+          "crosshair": 0.22,
+          "proteccion": 0.65
+        },
+        "morfologia": {
+          "radio_proximidad_ancla": 10,
+          "margen_superior_sin_hud": 0.02,
+          "radio_soporte": 2,
+          "tamano_cierre": 3,
+          "iteraciones_cierre": 1,
+          "area_minima": 2,
+          "tamano_ventana_densidad": 41,
+          "umbral_densidad_local": 0.72,
+          "radio_proteccion": 2,
+          "tamano_dilatacion": 3,
+          "iteraciones_dilatacion": 1
+        },
+        "compresion_png": 3
+      },
+      "estado": "completada",
+      "carpeta_entrada": "videos/video1/frames_originales",
+      "carpeta_salida": "videos/video1/mascaras_hud",
+      "frames_procesados": 19800,
+      "mascaras_generadas": 19800,
+      "bloques_temporales": 80,
+      "porcentaje_hud_promedio": 6.4496780497880035,
+      "fecha_ejecucion": "2026-08-20T12:36:46-05:00",
+      "tiempo_ejecucion_minutos": 13.433676745990912,
+      "limpieza": {
+        "parametros": {
+          "ancho_procesamiento": 960,
+          "alto_procesamiento": 540,
+          "neighbor_length": 10,
+          "ref_stride": 10,
+          "subvideo_length": 40,
+          "frames_por_bloque": 80,
+          "solapamiento_frames": 10,
+          "gpus": [
+            0,
+            1
+          ],
+          "usar_fp16": true,
+          "compresion_png": 3,
+          "eliminar_temporales": true
+        },
+        "estado": "completada",
+        "metodo": "ProPainter",
+        "carpeta_frames": "videos/video1/frames_originales",
+        "carpeta_mascaras": "videos/video1/mascaras_hud",
+        "carpeta_salida": "videos/video1/frames_sin_hud",
+        "resolucion_entrada": {
+          "ancho": 1920,
+          "alto": 1080
+        },
+        "resolucion_salida": {
+          "ancho": 960,
+          "alto": 540
+        },
+        "frames_procesados": 19800,
+        "bloques_procesados": 248,
+        "gpu_utilizadas": [
+          0,
+          1
+        ],
+        "gpu_detectadas": 2,
+        "fecha_hora_local": "2026-08-20T16:20:00-05:00",
+        "tiempo_ejecucion_segundos": 13379.619220014662
+      }
+    },
+    "modelos": {
+      "n2n": {
+        "nombre": "Noise2Noise",
+        "estado": "completada",
+        "modo": "original",
+        "carpeta_salida": "videos/video1/n2n",
+        "checkpoint": "cache/denoising/video1/n2n/modelo.ckpt",
+        "configuracion": "cache/denoising/video1/n2n/configuracion.json",
+        "parejas": "cache/denoising/video1/n2n/parejas.json",
+        "historial": "cache/denoising/video1/n2n/historial_entrenamiento.csv",
+        "frames_procesados": 100,
+        "fecha_ejecucion": "2026-08-27T11:17:43-05:00",
+        "tiempo_entrenamiento_minutos": 0.29945961106568575,
+        "tiempo_inferencia_minutos": 3.0405356019735335
+      },
+      "n2v": {
+        "nombre": "Noise2Void",
+        "estado": "completada",
+        "modo": "original",
+        "carpeta_salida": "videos/video1/n2v",
+        "checkpoint": "cache/denoising/video1/n2v/modelo.ckpt",
+        "configuracion": "cache/denoising/video1/n2v/configuracion.json",
+        "particion": "cache/denoising/video1/n2v/particion.json",
+        "historial": "cache/denoising/video1/n2v/historial_entrenamiento.csv",
+        "frames_procesados": 100,
+        "fecha_ejecucion": "2026-08-27T11:57:25-05:00",
+        "tiempo_entrenamiento_minutos": 0.3545348417013884,
+        "tiempo_inferencia_minutos": 14.234925533023974
+      }
+    }
   },
   "video2": {
     "archivo_original": "VideoCodefest_008-46min.avi",

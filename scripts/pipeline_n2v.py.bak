@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""Prepara, entrena e infiere Noise2Void con CAREamics 0.3.2."""
+import os
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+import argparse
+import gc
+import json
+import re
+import shutil
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pandas as pd
+import tifffile
+import torch
+from careamics import CAREamist
+from careamics.config.factories import create_n2v_config
+from careamics.lightning.data.grouped_index_sampler import GroupedIndexSampler
+from pytorch_lightning import Callback
+from tqdm import tqdm
+
+RUTA_PROYECTO = Path(__file__).resolve().parent.parent
+RUTA_CONFIGURACION = RUTA_PROYECTO / "config" / "videos.json"
+PORCENTAJE_VALIDACION = 0.05
+TAMANO_PARCHE = (128, 128)
+TAMANO_LOTE = 8
+PROFUNDIDAD_UNET = 4
+CANALES_INICIALES = 48
+CONEXION_RESIDUAL = True
+USAR_BATCH_NORM = False
+CANALES_INDEPENDIENTES = False
+EJES = "YXC"
+NUM_CANALES = 3
+TAMANO_TILE = (128, 128)
+SOLAPAMIENTO_TILE = (48, 48)
+COMPRESION_TIFF = "deflate"
+COMPRESION_PNG = 3
+TAMANO_BLOQUE_INFERENCIA = 16
+USAR_N2V2 = False
+
+
+def _longitud_grouped_index_sampler(self):
+    return sum(len(grupo) for grupo in self.grouped_indices)
+
+
+if not hasattr(GroupedIndexSampler, "__len__"):
+    GroupedIndexSampler.__len__ = _longitud_grouped_index_sampler
+
+
+def obtener_argumentos():
+    parser = argparse.ArgumentParser(description="Pipeline Noise2Void para videos registrados.")
+    parser.add_argument("--video", required=True)
+    parser.add_argument("--modo", required=True, choices=("original", "sin_hud"))
+    parser.add_argument("--etapa", required=True, choices=("preparar", "entrenar", "inferir", "todo"))
+    parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--epocas", type=int, default=50)
+    parser.add_argument("--pasos-por-epoca", type=int, default=2000)
+    parser.add_argument("--reiniciar", action="store_true")
+    return parser.parse_args()
+
+
+def cargar_configuracion():
+    if not RUTA_CONFIGURACION.is_file():
+        raise FileNotFoundError(f"No se encontró {RUTA_CONFIGURACION}")
+    with RUTA_CONFIGURACION.open("r", encoding="utf-8") as archivo:
+        configuracion = json.load(archivo)
+    if not isinstance(configuracion, dict):
+        raise ValueError("config/videos.json debe contener un objeto JSON.")
+    return configuracion
+
+
+def guardar_configuracion(configuracion):
+    temporal = RUTA_CONFIGURACION.with_suffix(".json.tmp")
+    try:
+        with temporal.open("w", encoding="utf-8") as archivo:
+            json.dump(configuracion, archivo, indent=2, ensure_ascii=False)
+            archivo.write("\n")
+        temporal.replace(RUTA_CONFIGURACION)
+    except BaseException:
+        temporal.unlink(missing_ok=True)
+        raise
+
+
+def resolver_ruta(valor):
+    ruta = Path(valor).expanduser()
+    if not ruta.is_absolute():
+        ruta = RUTA_PROYECTO / ruta
+    return ruta.resolve()
+
+
+def ruta_relativa(ruta):
+    try:
+        return str(ruta.relative_to(RUTA_PROYECTO))
+    except ValueError:
+        return str(ruta)
+
+
+def obtener_rutas(argumentos, configuracion):
+    if argumentos.video not in configuracion:
+        raise ValueError(f"El video '{argumentos.video}' no está registrado.")
+    video = configuracion[argumentos.video]
+    ruta_video = resolver_ruta(video["ruta"])
+    carpeta_video = ruta_video.parent.parent
+    fuente = video.get("extraccion", {}) if argumentos.modo == "original" else video.get("hud", {}).get("limpieza", {})
+    if fuente.get("estado") != "completada" or "carpeta_salida" not in fuente:
+        raise RuntimeError(f"La fuente '{argumentos.modo}' no está completada.")
+    sufijo = "n2v" if argumentos.modo == "original" else "n2v_sin_hud"
+    cache = RUTA_PROYECTO / "cache" / "denoising" / argumentos.video / sufijo
+    return {
+        "fuente": resolver_ruta(fuente["carpeta_salida"]),
+        "salida": carpeta_video / sufijo,
+        "cache": cache,
+        "dataset": cache / "dataset",
+        "trabajo": cache / "trabajo",
+        "inferencia": cache / "inferencia",
+        "checkpoint": cache / "modelo.ckpt",
+        "configuracion": cache / "configuracion.json",
+        "particion": cache / "particion.json",
+        "historial": cache / "historial_entrenamiento.csv",
+        "tiempos": cache / "tiempos.json",
+    }
+
+
+def clave_natural(ruta):
+    return [int(parte) if parte.isdigit() else parte.lower() for parte in re.split(r"(\d+)", ruta.name)]
+
+
+def listar_imagenes(carpeta, max_frames=None):
+    extensiones = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+    rutas = sorted([ruta for ruta in carpeta.iterdir() if ruta.is_file() and ruta.suffix.lower() in extensiones], key=clave_natural)
+    if max_frames is not None:
+        if max_frames <= 0:
+            raise ValueError("--max-frames debe ser mayor que cero.")
+        rutas = rutas[:max_frames]
+    if not rutas:
+        raise RuntimeError(f"No se encontraron imágenes en {carpeta}")
+    return rutas
+
+
+def convertir_uint8(imagen):
+    imagen = np.asarray(imagen)
+    while imagen.ndim > 3 and imagen.shape[0] == 1:
+        imagen = imagen[0]
+    if imagen.ndim == 3 and imagen.shape[0] in (1, 3, 4) and imagen.shape[-1] not in (1, 3, 4):
+        imagen = np.moveaxis(imagen, 0, -1)
+    if np.issubdtype(imagen.dtype, np.floating):
+        minimo = float(np.nanmin(imagen))
+        maximo = float(np.nanmax(imagen))
+        if minimo >= -0.1 and maximo <= 1.5:
+            imagen = imagen * 255.0
+    imagen = np.nan_to_num(imagen, nan=0.0, posinf=255.0, neginf=0.0)
+    return np.clip(imagen, 0, 255).round().astype(np.uint8)
+
+
+def leer_rgb(ruta):
+    if ruta.suffix.lower() in {".tif", ".tiff"}:
+        imagen = tifffile.imread(ruta)
+    else:
+        bgr = cv2.imread(str(ruta), cv2.IMREAD_UNCHANGED)
+        if bgr is None:
+            raise RuntimeError(f"No se pudo leer {ruta}")
+        if bgr.ndim == 2:
+            imagen = np.repeat(bgr[:, :, None], 3, axis=2)
+        elif bgr.shape[2] == 4:
+            imagen = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
+        else:
+            imagen = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    imagen = convertir_uint8(imagen)
+    if imagen.ndim == 2:
+        imagen = np.repeat(imagen[:, :, None], 3, axis=2)
+    if imagen.shape[-1] == 4:
+        imagen = imagen[:, :, :3]
+    if imagen.ndim != 3 or imagen.shape[-1] != 3:
+        raise RuntimeError(f"Forma RGB no válida en {ruta}: {imagen.shape}")
+    return imagen
+
+
+def escribir_tiff(tarea):
+    origen, destino = tarea
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(destino, leer_rgb(origen), compression=COMPRESION_TIFF)
+    return destino
+
+
+def guardar_png(ruta, imagen):
+    imagen = convertir_uint8(imagen)
+    if imagen.ndim == 2:
+        imagen = np.repeat(imagen[:, :, None], 3, axis=2)
+    bgr = cv2.cvtColor(imagen, cv2.COLOR_RGB2BGR)
+    correcta, codificada = cv2.imencode(".png", bgr, [cv2.IMWRITE_PNG_COMPRESSION, COMPRESION_PNG])
+    if not correcta:
+        raise RuntimeError(f"No se pudo codificar {ruta}")
+    temporal = ruta.with_suffix(".png.tmp")
+    codificada.tofile(temporal)
+    temporal.replace(ruta)
+
+
+def limpiar_memoria():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def trabajadores_disponibles():
+    return max(1, int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1)))
+
+
+def reiniciar(rutas):
+    shutil.rmtree(rutas["dataset"], ignore_errors=True)
+    shutil.rmtree(rutas["trabajo"], ignore_errors=True)
+    shutil.rmtree(rutas["inferencia"], ignore_errors=True)
+    shutil.rmtree(rutas["salida"], ignore_errors=True)
+    for archivo in (rutas["checkpoint"], rutas["configuracion"], rutas["particion"], rutas["historial"], rutas["tiempos"]):
+        archivo.unlink(missing_ok=True)
+
+
+def preparar(argumentos, rutas):
+    frames = listar_imagenes(rutas["fuente"], argumentos.max_frames)
+    if len(frames) < 4:
+        raise RuntimeError("N2V necesita al menos cuatro frames.")
+    if argumentos.reiniciar:
+        reiniciar(rutas)
+    rutas["cache"].mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(rutas["dataset"], ignore_errors=True)
+    (rutas["dataset"] / "train").mkdir(parents=True, exist_ok=True)
+    (rutas["dataset"] / "valid").mkdir(parents=True, exist_ok=True)
+    cada_n = max(2, round(1.0 / PORCENTAJE_VALIDACION))
+    registros = []
+    tareas = []
+    for indice, frame in enumerate(frames):
+        conjunto = "valid" if (indice + 1) % cada_n == 0 else "train"
+        registros.append({"frame": frame.name, "conjunto": conjunto})
+    if not any(r["conjunto"] == "valid" for r in registros):
+        registros[-1]["conjunto"] = "valid"
+    if not any(r["conjunto"] == "train" for r in registros):
+        registros[0]["conjunto"] = "train"
+    mapa = {ruta.name: ruta for ruta in frames}
+    for registro in registros:
+        origen = mapa[registro["frame"]]
+        destino = rutas["dataset"] / registro["conjunto"] / f"{origen.stem}.tif"
+        tareas.append((origen, destino))
+    with ThreadPoolExecutor(max_workers=trabajadores_disponibles()) as ejecutor:
+        list(tqdm(ejecutor.map(escribir_tiff, tareas), total=len(tareas), desc="Preparando N2V", unit="frame"))
+    resumen = {"video": argumentos.video, "modo": argumentos.modo, "frames": registros}
+    rutas["particion"].write_text(json.dumps(resumen, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"N2V preparado: {len(frames)} frames.", flush=True)
+
+
+def numero_gpus():
+    cantidad = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if cantidad < 1:
+        raise RuntimeError("No hay GPU visible para CAREamics.")
+    return cantidad
+
+
+def crear_configuracion(argumentos, entrenamiento):
+    dispositivos = numero_gpus()
+    trabajadores = max(1, trabajadores_disponibles() // dispositivos) if entrenamiento else 0
+    config = create_n2v_config(
+        experiment_name=f"n2v_{argumentos.video}_{argumentos.modo}",
+        data_type="tiff",
+        axes=EJES,
+        patch_size=TAMANO_PARCHE,
+        batch_size=TAMANO_LOTE,
+        num_epochs=argumentos.epocas if entrenamiento else 1,
+        num_steps=argumentos.pasos_por_epoca if entrenamiento else None,
+        use_n2v2=USAR_N2V2,
+        n_channels=NUM_CANALES,
+    )
+    config.data_config.in_memory = False
+    config.data_config.num_workers = trabajadores
+    config.data_config.train_dataloader_params["num_workers"] = trabajadores
+    config.data_config.val_dataloader_params["num_workers"] = trabajadores
+    config.data_config.pred_dataloader_params["num_workers"] = 0
+    config.data_config.pred_dataloader_params["persistent_workers"] = False
+    config.data_config.pred_dataloader_params["prefetch_factor"] = None
+    if entrenamiento:
+        config.training_config.trainer_params.update({
+            "accelerator": "gpu",
+            "devices": dispositivos,
+            "strategy": "ddp_find_unused_parameters_true" if dispositivos > 1 else "auto",
+            "precision": "32-true",
+            "benchmark": True,
+            "deterministic": False,
+            "gradient_clip_val": 1.0,
+            "gradient_clip_algorithm": "norm",
+            "enable_progress_bar": False,
+            "log_every_n_steps": 10,
+            "num_sanity_val_steps": 2,
+        })
+        config.training_config.checkpoint_params.update({"every_n_epochs": 1, "save_last": True, "save_top_k": -1})
+    else:
+        config.training_config.trainer_params.update({"accelerator": "gpu", "devices": 1, "strategy": "auto", "precision": "32-true", "enable_progress_bar": False})
+    return config
+
+
+class HistorialPerdida(Callback):
+    def __init__(self, ruta_csv):
+        super().__init__()
+        self.ruta_csv = Path(ruta_csv)
+        self.registros = []
+        self.inicio_epoca = None
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        self.inicio_epoca = time.monotonic()
+        if trainer.is_global_zero:
+            print(f"Época {trainer.current_epoch + 1}/{trainer.max_epochs} iniciada", flush=True)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking or not trainer.is_global_zero:
+            return
+        metricas = trainer.callback_metrics
+
+        def valor(nombres):
+            for nombre in nombres:
+                if nombre in metricas:
+                    dato = metricas[nombre]
+                    return float(dato.detach().cpu().item() if isinstance(dato, torch.Tensor) else dato)
+            return np.nan
+
+        registro = {"epoca": int(trainer.current_epoch + 1), "train_loss": valor(("train_loss_epoch", "train_loss")), "val_loss": valor(("val_loss", "validation_loss")), "duracion_minutos": (time.monotonic() - self.inicio_epoca) / 60.0}
+        if not np.isfinite(registro["train_loss"]) or not np.isfinite(registro["val_loss"]):
+            raise RuntimeError("train_loss o val_loss contiene NaN o infinito.")
+        self.registros.append(registro)
+        pd.DataFrame(self.registros).to_csv(self.ruta_csv, index=False)
+        print(f"Época {registro['epoca']} terminada | train={registro['train_loss']:.6f} | val={registro['val_loss']:.6f}", flush=True)
+
+
+def entrenar(argumentos, rutas):
+    if not (rutas["dataset"] / "train").is_dir():
+        raise FileNotFoundError("No existe el dataset N2V. Ejecute --etapa preparar.")
+    shutil.rmtree(rutas["trabajo"], ignore_errors=True)
+    rutas["trabajo"].mkdir(parents=True, exist_ok=True)
+    config = crear_configuracion(argumentos, True)
+    contenido = config.model_dump_json(indent=2) if hasattr(config, "model_dump_json") else config.json(indent=2)
+    rutas["configuracion"].write_text(contenido, encoding="utf-8")
+    anterior = Path.cwd()
+    inicio = time.monotonic()
+    try:
+        os.chdir(rutas["trabajo"])
+        careamist = CAREamist(config=config, callbacks=[HistorialPerdida(rutas["historial"])], enable_progress_bar=False)
+        careamist.train(train_data=str(rutas["dataset"] / "train"), val_data=str(rutas["dataset"] / "valid"))
+    finally:
+        os.chdir(anterior)
+    candidatos = sorted(rutas["trabajo"].rglob("*last.ckpt"), key=lambda ruta: ruta.stat().st_mtime)
+    if not candidatos:
+        candidatos = sorted(rutas["trabajo"].rglob("*.ckpt"), key=lambda ruta: ruta.stat().st_mtime)
+    if not candidatos:
+        raise RuntimeError(f"No se encontró un checkpoint en {rutas['trabajo']}")
+    shutil.copy2(candidatos[-1], rutas["checkpoint"])
+    tiempos = {"entrenamiento_minutos": (time.monotonic() - inicio) / 60.0}
+    rutas["tiempos"].write_text(json.dumps(tiempos, indent=2), encoding="utf-8")
+    print(f"Modelo guardado en {rutas['checkpoint']}", flush=True)
+
+
+def extraer_predicciones(resultado):
+    predicciones, fuentes = resultado
+    salida = []
+    for prediccion in predicciones:
+        if isinstance(prediccion, torch.Tensor):
+            prediccion = prediccion.detach().cpu().numpy()
+        salida.append(convertir_uint8(prediccion))
+    return salida, fuentes
+
+
+def inferir(argumentos, rutas, configuracion):
+    if not rutas["checkpoint"].is_file():
+        raise FileNotFoundError(f"No existe {rutas['checkpoint']}")
+    frames = listar_imagenes(rutas["fuente"], argumentos.max_frames)
+    shutil.rmtree(rutas["salida"], ignore_errors=True)
+    shutil.rmtree(rutas["inferencia"], ignore_errors=True)
+    rutas["salida"].mkdir(parents=True, exist_ok=True)
+    rutas["inferencia"].mkdir(parents=True, exist_ok=True)
+    careamist = CAREamist(config=crear_configuracion(argumentos, False), enable_progress_bar=False)
+    inicio = time.monotonic()
+    for inicio_bloque in tqdm(range(0, len(frames), TAMANO_BLOQUE_INFERENCIA), desc="Inferencia N2V", unit="bloque"):
+        bloque = frames[inicio_bloque:inicio_bloque + TAMANO_BLOQUE_INFERENCIA]
+        carpeta_bloque = rutas["inferencia"] / f"bloque_{inicio_bloque:06d}"
+        carpeta_bloque.mkdir(parents=True, exist_ok=True)
+        tareas = [(frame, carpeta_bloque / f"{frame.stem}.tif") for frame in bloque]
+        with ThreadPoolExecutor(max_workers=min(trabajadores_disponibles(), len(tareas))) as ejecutor:
+            list(ejecutor.map(escribir_tiff, tareas))
+        resultado = careamist.predict(str(carpeta_bloque), batch_size=1, tile_size=TAMANO_TILE, tile_overlap=SOLAPAMIENTO_TILE, axes=EJES, data_type="tiff", num_workers=0, in_memory=False, checkpoint=str(rutas["checkpoint"]))
+        predicciones, _ = extraer_predicciones(resultado)
+        if len(predicciones) != len(bloque):
+            raise RuntimeError(f"CAREamics devolvió {len(predicciones)} predicciones para {len(bloque)} frames.")
+        for frame, prediccion in zip(bloque, predicciones):
+            guardar_png(rutas["salida"] / frame.name, prediccion)
+        shutil.rmtree(carpeta_bloque)
+        limpiar_memoria()
+    cantidad = len(listar_imagenes(rutas["salida"]))
+    if cantidad != len(frames):
+        raise RuntimeError(f"Se esperaban {len(frames)} salidas y se encontraron {cantidad}.")
+    duracion = (time.monotonic() - inicio) / 60.0
+    tiempos = json.loads(rutas["tiempos"].read_text()) if rutas["tiempos"].is_file() else {}
+    tiempos["inferencia_minutos"] = duracion
+    rutas["tiempos"].write_text(json.dumps(tiempos, indent=2), encoding="utf-8")
+    shutil.rmtree(rutas["dataset"], ignore_errors=True)
+    shutil.rmtree(rutas["trabajo"], ignore_errors=True)
+    shutil.rmtree(rutas["inferencia"], ignore_errors=True)
+    clave = "n2v" if argumentos.modo == "original" else "n2v_sin_hud"
+    configuracion[argumentos.video].setdefault("modelos", {})
+    configuracion[argumentos.video]["modelos"][clave] = {
+        "nombre": "Noise2Void" if argumentos.modo == "original" else "Noise2Void sin HUD",
+        "estado": "completada",
+        "modo": argumentos.modo,
+        "carpeta_salida": ruta_relativa(rutas["salida"]),
+        "checkpoint": ruta_relativa(rutas["checkpoint"]),
+        "configuracion": ruta_relativa(rutas["configuracion"]),
+        "particion": ruta_relativa(rutas["particion"]),
+        "historial": ruta_relativa(rutas["historial"]),
+        "frames_procesados": cantidad,
+        "fecha_ejecucion": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "tiempo_entrenamiento_minutos": tiempos.get("entrenamiento_minutos"),
+        "tiempo_inferencia_minutos": duracion,
+    }
+    guardar_configuracion(configuracion)
+    print(f"Inferencia N2V terminada: {cantidad} frames.", flush=True)
+
+
+def ejecutar(argumentos):
+    configuracion = cargar_configuracion()
+    rutas = obtener_rutas(argumentos, configuracion)
+    if argumentos.etapa in ("preparar", "todo"):
+        preparar(argumentos, rutas)
+    if argumentos.etapa in ("entrenar", "todo"):
+        entrenar(argumentos, rutas)
+    if argumentos.etapa in ("inferir", "todo"):
+        inferir(argumentos, rutas, configuracion)
+
+
+def main():
+    try:
+        ejecutar(obtener_argumentos())
+        return 0
+    except KeyboardInterrupt:
+        print("\nPipeline N2V interrumpido.", file=sys.stderr)
+        return 130
+    except Exception as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
