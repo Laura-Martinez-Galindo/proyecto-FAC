@@ -130,12 +130,9 @@
         "carpeta_salida": "videos/video1/n2n",
         "checkpoint": "cache/denoising/video1/n2n/modelo.ckpt",
         "configuracion": "cache/denoising/video1/n2n/configuracion.json",
-        "parejas": "cache/denoising/video1/n2n/parejas.json",
-        "historial": "cache/denoising/video1/n2n/historial_entrenamiento.csv",
-        "frames_procesados": 100,
-        "fecha_ejecucion": "2026-08-27T11:17:43-05:00",
-        "tiempo_entrenamiento_minutos": 0.29945961106568575,
-        "tiempo_inferencia_minutos": 3.0405356019735335
+        "frames_procesados": 19800,
+        "fecha_ejecucion": "2026-08-27T21:57:35-05:00",
+        "tiempo_total_minutos": 238.8040167832747
       },
       "n2v": {
         "nombre": "Noise2Void",
@@ -144,12 +141,31 @@
         "carpeta_salida": "videos/video1/n2v",
         "checkpoint": "cache/denoising/video1/n2v/modelo.ckpt",
         "configuracion": "cache/denoising/video1/n2v/configuracion.json",
-        "particion": "cache/denoising/video1/n2v/particion.json",
-        "historial": "cache/denoising/video1/n2v/historial_entrenamiento.csv",
-        "frames_procesados": 100,
-        "fecha_ejecucion": "2026-08-27T11:57:25-05:00",
-        "tiempo_entrenamiento_minutos": 0.3545348417013884,
-        "tiempo_inferencia_minutos": 14.234925533023974
+        "frames_procesados": 19800,
+        "fecha_ejecucion": "2026-08-27T20:42:54-05:00",
+        "tiempo_total_minutos": 233.264332880266
+      },
+      "n2v_sin_hud": {
+        "nombre": "Noise2Void sin HUD",
+        "estado": "completada",
+        "modo": "sin_hud",
+        "carpeta_salida": "videos/video1/n2v_sin_hud",
+        "checkpoint": "cache/denoising/video1/n2v_sin_hud/modelo.ckpt",
+        "configuracion": "cache/denoising/video1/n2v_sin_hud/configuracion.json",
+        "frames_procesados": 19800,
+        "fecha_ejecucion": "2026-08-28T01:42:40-05:00",
+        "tiempo_total_minutos": 69.34055471519629
+      },
+      "n2n_sin_hud": {
+        "nombre": "Noise2Noise sin HUD",
+        "estado": "completada",
+        "modo": "sin_hud",
+        "carpeta_salida": "videos/video1/n2n_sin_hud",
+        "checkpoint": "cache/denoising/video1/n2n_sin_hud/modelo.ckpt",
+        "configuracion": "cache/denoising/video1/n2n_sin_hud/configuracion.json",
+        "frames_procesados": 19800,
+        "fecha_ejecucion": "2026-08-28T02:10:10-05:00",
+        "tiempo_total_minutos": 77.84607582216462
       }
     }
   },

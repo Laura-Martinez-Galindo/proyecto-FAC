@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
-"""Prepara, entrena e infiere Noise2Noise con CAREamics 0.3.2."""
+"""Pipeline final CAREamics 0.3.2: preparacion, entrenamiento e inferencia."""
+import argparse
+import fcntl
+import gc
+import json
 import os
+import re
+import shutil
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
 os.environ.setdefault("MPLBACKEND", "Agg")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -8,699 +19,263 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
-import argparse
-import gc
-import json
-import re
-import shutil
-import sys
-import time
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from pathlib import Path
-
 import cv2
 import numpy as np
-import pandas as pd
 import tifffile
 import torch
 from careamics import CAREamist
-from careamics.config.factories import create_n2n_config
-from careamics.lightning.data.grouped_index_sampler import GroupedIndexSampler
-from pytorch_lightning import Callback
+from careamics.config.factories import create_advanced_n2n_config
 from tqdm import tqdm
 
-RUTA_PROYECTO = Path(__file__).resolve().parent.parent
-RUTA_CONFIGURACION = RUTA_PROYECTO / "config" / "videos.json"
-PORCENTAJE_VALIDACION = 0.05
-TAMANO_PARCHE = (128, 128)
-TAMANO_LOTE = 4
-PROFUNDIDAD_UNET = 4
-CANALES_INICIALES = 48
-CONEXION_RESIDUAL = True
-USAR_BATCH_NORM = False
-CANALES_INDEPENDIENTES = False
+RAIZ = Path(__file__).resolve().parent.parent
+RUTA_JSON = RAIZ / "config" / "videos.json"
 EJES = "YXC"
-NUM_CANALES = 3
-TAMANO_TILE = (128, 128)
-SOLAPAMIENTO_TILE = (48, 48)
-COMPRESION_TIFF = "deflate"
-COMPRESION_PNG = 3
-TAMANO_BLOQUE_INFERENCIA = 1
+N_CANALES = 3
+PARCHES = (128, 128)
+LOTE = 8
+TILE = (256, 256)
+OVERLAP = (48, 48)
+AUMENTOS = ["x_flip", "y_flip", "rotate_90"]
+SEMILLA = 42
 
 
-def _longitud_grouped_index_sampler(self):
-    return sum(len(grupo) for grupo in self.grouped_indices)
+def argumentos():
+    p = argparse.ArgumentParser()
+    p.add_argument("--video", required=True)
+    p.add_argument("--modo", choices=("original", "sin_hud"), required=True)
+    p.add_argument("--etapa", choices=("preparar", "entrenar", "inferir", "todo"), default="todo")
+    p.add_argument("--max-frames", type=int)
+    p.add_argument("--epocas", type=int, default=30)
+    p.add_argument("--pasos-por-epoca", type=int, default=500)
+    p.add_argument("--reiniciar", action="store_true")
+    return p.parse_args()
 
 
-if not hasattr(GroupedIndexSampler, "__len__"):
-    GroupedIndexSampler.__len__ = _longitud_grouped_index_sampler
+def cargar_json():
+    with RUTA_JSON.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def obtener_argumentos():
-    parser = argparse.ArgumentParser(description="Pipeline Noise2Noise para videos registrados.")
-    parser.add_argument("--video", required=True)
-    parser.add_argument("--modo", required=True, choices=("original", "sin_hud"))
-    parser.add_argument("--etapa", required=True, choices=("preparar", "entrenar", "inferir", "todo"))
-    parser.add_argument("--max-frames", type=int, default=None)
-    parser.add_argument("--epocas", type=int, default=50)
-    parser.add_argument("--pasos-por-epoca", type=int, default=2000)
-    parser.add_argument("--reiniciar", action="store_true")
-    return parser.parse_args()
+def guardar_json_bloqueado(datos):
+    lock = RUTA_JSON.with_suffix(".lock")
+    with lock.open("w") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        actual = cargar_json()
+        for video, contenido in datos.items():
+            actual[video] = contenido
+        tmp = RUTA_JSON.with_suffix(".tmp")
+        tmp.write_text(json.dumps(actual, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(RUTA_JSON)
+        fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
-def cargar_configuracion():
-    if not RUTA_CONFIGURACION.is_file():
-        raise FileNotFoundError(f"No se encontró {RUTA_CONFIGURACION}")
-    with RUTA_CONFIGURACION.open("r", encoding="utf-8") as archivo:
-        configuracion = json.load(archivo)
-    if not isinstance(configuracion, dict):
-        raise ValueError("config/videos.json debe contener un objeto JSON.")
-    return configuracion
+def absoluta(valor):
+    p = Path(valor).expanduser()
+    return (RAIZ / p).resolve() if not p.is_absolute() else p.resolve()
 
 
-def guardar_configuracion(configuracion):
-    temporal = RUTA_CONFIGURACION.with_suffix(".json.tmp")
+def relativa(p):
     try:
-        with temporal.open("w", encoding="utf-8") as archivo:
-            json.dump(configuracion, archivo, indent=2, ensure_ascii=False)
-            archivo.write("\n")
-        temporal.replace(RUTA_CONFIGURACION)
-    except BaseException:
-        temporal.unlink(missing_ok=True)
-        raise
-
-
-def resolver_ruta(valor):
-    ruta = Path(valor).expanduser()
-    if not ruta.is_absolute():
-        ruta = RUTA_PROYECTO / ruta
-    return ruta.resolve()
-
-
-def ruta_relativa(ruta):
-    try:
-        return str(ruta.relative_to(RUTA_PROYECTO))
+        return str(p.resolve().relative_to(RAIZ))
     except ValueError:
-        return str(ruta)
+        return str(p.resolve())
 
 
-def obtener_rutas(argumentos, configuracion):
-    if argumentos.video not in configuracion:
-        raise ValueError(f"El video '{argumentos.video}' no está registrado.")
-    video = configuracion[argumentos.video]
-    ruta_video = resolver_ruta(video["ruta"])
-    carpeta_video = ruta_video.parent.parent
-    fuente = video.get("extraccion", {}) if argumentos.modo == "original" else video.get("hud", {}).get("limpieza", {})
-    if fuente.get("estado") != "completada" or "carpeta_salida" not in fuente:
-        raise RuntimeError(f"La fuente '{argumentos.modo}' no está completada.")
-    sufijo = "n2n" if argumentos.modo == "original" else "n2n_sin_hud"
-    cache = RUTA_PROYECTO / "cache" / "denoising" / argumentos.video / sufijo
-    return {
-        "fuente": resolver_ruta(fuente["carpeta_salida"]),
-        "salida": carpeta_video / sufijo,
-        "cache": cache,
-        "dataset": cache / "dataset",
-        "trabajo": cache / "trabajo",
-        "inferencia": cache / "inferencia",
-        "checkpoint": cache / "modelo.ckpt",
-        "configuracion": cache / "configuracion.json",
-        "parejas": cache / "parejas.json",
-        "historial": cache / "historial_entrenamiento.csv",
-        "tiempos": cache / "tiempos.json",
-    }
+def natural(p):
+    return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", p.name)]
 
 
-def clave_natural(ruta):
-    return [int(parte) if parte.isdigit() else parte.lower() for parte in re.split(r"(\d+)", ruta.name)]
+def listar(carpeta, limite=None):
+    exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+    rutas = sorted((p for p in carpeta.iterdir() if p.is_file() and p.suffix.lower() in exts), key=natural)
+    return rutas[:limite] if limite else rutas
 
 
-def listar_imagenes(carpeta, max_frames=None):
-    extensiones = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-    rutas = sorted([ruta for ruta in carpeta.iterdir() if ruta.is_file() and ruta.suffix.lower() in extensiones], key=clave_natural)
-    if max_frames is not None:
-        if max_frames <= 0:
-            raise ValueError("--max-frames debe ser mayor que cero.")
-        rutas = rutas[:max_frames]
-    if not rutas:
-        raise RuntimeError(f"No se encontraron imágenes en {carpeta}")
-    return rutas
-
-
-def convertir_uint8(imagen):
-    imagen = np.asarray(imagen)
-    while imagen.ndim > 3 and imagen.shape[0] == 1:
-        imagen = imagen[0]
-    if imagen.ndim == 3 and imagen.shape[0] in (1, 3, 4) and imagen.shape[-1] not in (1, 3, 4):
-        imagen = np.moveaxis(imagen, 0, -1)
-    if np.issubdtype(imagen.dtype, np.floating):
-        minimo = float(np.nanmin(imagen))
-        maximo = float(np.nanmax(imagen))
-        if minimo >= -0.1 and maximo <= 1.5:
-            imagen = imagen * 255.0
-    imagen = np.nan_to_num(imagen, nan=0.0, posinf=255.0, neginf=0.0)
-    return np.clip(imagen, 0, 255).round().astype(np.uint8)
-
-
-def leer_rgb(ruta):
-    if ruta.suffix.lower() in {".tif", ".tiff"}:
-        imagen = tifffile.imread(ruta)
+def leer_rgb(p):
+    if p.suffix.lower() in {".tif", ".tiff"}:
+        a = tifffile.imread(p)
     else:
-        bgr = cv2.imread(str(ruta), cv2.IMREAD_UNCHANGED)
+        bgr = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
         if bgr is None:
-            raise RuntimeError(f"No se pudo leer {ruta}")
+            raise RuntimeError(f"No se pudo leer {p}")
         if bgr.ndim == 2:
-            imagen = np.repeat(bgr[:, :, None], 3, axis=2)
+            a = np.repeat(bgr[:, :, None], 3, axis=2)
         elif bgr.shape[2] == 4:
-            imagen = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
+            a = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
         else:
-            imagen = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    imagen = convertir_uint8(imagen)
-    if imagen.ndim == 2:
-        imagen = np.repeat(imagen[:, :, None], 3, axis=2)
-    if imagen.shape[-1] == 4:
-        imagen = imagen[:, :, :3]
-    if imagen.ndim != 3 or imagen.shape[-1] != 3:
-        raise RuntimeError(f"Forma RGB no válida en {ruta}: {imagen.shape}")
-    return imagen
+            a = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    a = np.asarray(a)
+    if a.ndim == 2:
+        a = np.repeat(a[:, :, None], 3, axis=2)
+    if a.shape[-1] == 4:
+        a = a[:, :, :3]
+    return np.clip(a, 0, 255).astype(np.uint8)
 
 
-def escribir_tiff(tarea):
-    origen, destino = tarea
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(destino, leer_rgb(origen), compression=COMPRESION_TIFF)
-    return destino
-
-
-def guardar_png(ruta, imagen):
-    imagen = convertir_uint8(imagen)
-    if imagen.ndim == 2:
-        imagen = np.repeat(imagen[:, :, None], 3, axis=2)
-    bgr = cv2.cvtColor(imagen, cv2.COLOR_RGB2BGR)
-    correcta, codificada = cv2.imencode(".png", bgr, [cv2.IMWRITE_PNG_COMPRESSION, COMPRESION_PNG])
-    if not correcta:
-        raise RuntimeError(f"No se pudo codificar {ruta}")
-    temporal = ruta.with_suffix(".png.tmp")
-    codificada.tofile(temporal)
-    temporal.replace(ruta)
-
-
-def limpiar_memoria():
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
-def trabajadores_disponibles():
-    return max(1, int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1)))
-
-
-def puntuar_pareja(tarea):
-    indice, entrada, objetivo = tarea
-    gris_entrada = cv2.cvtColor(leer_rgb(entrada), cv2.COLOR_RGB2GRAY)
-    gris_objetivo = cv2.cvtColor(leer_rgb(objetivo), cv2.COLOR_RGB2GRAY)
-    alto = 180
-    ancho = max(1, round(gris_entrada.shape[1] * alto / gris_entrada.shape[0]))
-    gris_entrada = cv2.resize(gris_entrada, (ancho, alto), interpolation=cv2.INTER_AREA).astype(np.float32)
-    gris_objetivo = cv2.resize(gris_objetivo, (ancho, alto), interpolation=cv2.INTER_AREA).astype(np.float32)
-    diferencia = float(np.mean(np.abs(gris_entrada - gris_objetivo)))
-    desplazamiento, respuesta = cv2.phaseCorrelate(gris_entrada, gris_objetivo)
-    movimiento = float(np.hypot(*desplazamiento))
-    return {"indice": indice, "input": entrada.name, "target": objetivo.name, "diferencia_media": diferencia, "movimiento_estimado": movimiento, "respuesta_fase": float(respuesta)}
-
-
-def calcular_umbral_robusto(valores, percentil=97.5):
-    valores = np.asarray(valores, dtype=float)
-    mediana = float(np.median(valores))
-    mad = float(np.median(np.abs(valores - mediana)))
-    return min(float(np.percentile(valores, percentil)), mediana + 8.0 * 1.4826 * max(mad, 1e-6))
-
-
-def seleccionar_parejas(frames):
-    tareas = [(i, frames[i], frames[i + 1]) for i in range(len(frames) - 1)]
-    with ThreadPoolExecutor(max_workers=trabajadores_disponibles()) as ejecutor:
-        registros = list(tqdm(ejecutor.map(puntuar_pareja, tareas), total=len(tareas), desc="Analizando parejas", unit="pareja"))
-    umbral_diferencia = calcular_umbral_robusto([r["diferencia_media"] for r in registros])
-    umbral_movimiento = calcular_umbral_robusto([r["movimiento_estimado"] for r in registros])
-    for registro in registros:
-        registro["excluida_transicion"] = registro["diferencia_media"] > umbral_diferencia
-        registro["excluida_movimiento"] = registro["movimiento_estimado"] > umbral_movimiento
-        registro["valida"] = not registro["excluida_transicion"] and not registro["excluida_movimiento"]
-        registro["conjunto"] = "excluida"
-    validas = [r for r in registros if r["valida"]]
-    if len(validas) < 3:
-        raise RuntimeError(f"Solo se encontraron {len(validas)} parejas válidas.")
-    cada_n = max(2, round(1.0 / PORCENTAJE_VALIDACION))
-    for posicion, registro in enumerate(validas):
-        registro["conjunto"] = "valid" if (posicion + 1) % cada_n == 0 else "train"
-    if not any(r["conjunto"] == "valid" for r in validas):
-        validas[-1]["conjunto"] = "valid"
-    if not any(r["conjunto"] == "train" for r in validas):
-        validas[0]["conjunto"] = "train"
-    return registros, umbral_diferencia, umbral_movimiento
-
-
-def reiniciar(rutas):
-    shutil.rmtree(rutas["dataset"], ignore_errors=True)
-    shutil.rmtree(rutas["trabajo"], ignore_errors=True)
-    shutil.rmtree(rutas["inferencia"], ignore_errors=True)
-    shutil.rmtree(rutas["salida"], ignore_errors=True)
-    for archivo in (rutas["checkpoint"], rutas["configuracion"], rutas["parejas"], rutas["historial"], rutas["tiempos"]):
-        archivo.unlink(missing_ok=True)
-
-
-def preparar(argumentos, rutas):
-    frames = listar_imagenes(rutas["fuente"], argumentos.max_frames)
-    if len(frames) < 4:
-        raise RuntimeError("N2N necesita al menos cuatro frames.")
-    if argumentos.reiniciar:
-        reiniciar(rutas)
-    rutas["cache"].mkdir(parents=True, exist_ok=True)
-    shutil.rmtree(rutas["dataset"], ignore_errors=True)
-    for conjunto in ("train", "valid"):
-        (rutas["dataset"] / conjunto / "input").mkdir(parents=True, exist_ok=True)
-        (rutas["dataset"] / conjunto / "target").mkdir(parents=True, exist_ok=True)
-    registros, umbral_diferencia, umbral_movimiento = seleccionar_parejas(frames)
-    mapa = {ruta.name: ruta for ruta in frames}
-    tareas = []
-    for registro in registros:
-        if not registro["valida"]:
-            continue
-        conjunto = registro["conjunto"]
-        nombre = f"pareja_{registro['indice']:06d}.tif"
-        tareas.append((mapa[registro["input"]], rutas["dataset"] / conjunto / "input" / nombre))
-        tareas.append((mapa[registro["target"]], rutas["dataset"] / conjunto / "target" / nombre))
-    with ThreadPoolExecutor(max_workers=trabajadores_disponibles()) as ejecutor:
-        list(tqdm(ejecutor.map(escribir_tiff, tareas), total=len(tareas), desc="Escribiendo TIFF", unit="archivo"))
-    resumen = {
-        "video": argumentos.video,
-        "modo": argumentos.modo,
-        "frames_analizados": len(frames),
-        "parejas_totales": len(registros),
-        "parejas_train": sum(r["conjunto"] == "train" for r in registros),
-        "parejas_valid": sum(r["conjunto"] == "valid" for r in registros),
-        "parejas_excluidas": sum(r["conjunto"] == "excluida" for r in registros),
-        "umbral_diferencia_media": umbral_diferencia,
-        "umbral_movimiento_estimado": umbral_movimiento,
-        "parejas": registros,
+def rutas_base(a, cfg, sufijo):
+    v = cfg[a.video]
+    fuente_cfg = v.get("extraccion", {}) if a.modo == "original" else v.get("hud", {}).get("limpieza", {})
+    if fuente_cfg.get("estado") != "completada":
+        raise RuntimeError(f"La fuente {a.modo} no esta completada")
+    fuente = absoluta(fuente_cfg["carpeta_salida"])
+    base_video = absoluta(v["ruta"]).parent.parent
+    nombre = sufijo if a.modo == "original" else f"{sufijo}_sin_hud"
+    cache = RAIZ / "cache" / "denoising" / a.video / nombre
+    return {
+        "fuente": fuente, "salida": base_video / nombre, "cache": cache,
+        "train": cache / "dataset" / "train", "val": cache / "dataset" / "val",
+        "predict_input": cache / "dataset" / "predict",
+        "work": cache / "trabajo", "ckpt": cache / "modelo.ckpt",
+        "config": cache / "configuracion.json", "pred_tmp": cache / "predicciones_tiff",
+        "nombre": nombre,
     }
-    rutas["parejas"].write_text(json.dumps(resumen, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps({k: v for k, v in resumen.items() if k != "parejas"}, indent=2, ensure_ascii=False), flush=True)
 
 
-def numero_gpus():
-    cantidad = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    if cantidad < 1:
-        raise RuntimeError("No hay GPU visible para CAREamics.")
-    return cantidad
+def preparar_comun(a, r):
+    frames = listar(r["fuente"], a.max_frames)
+    if len(frames) < 10:
+        raise RuntimeError("Se requieren al menos 10 frames")
+    if a.reiniciar:
+        shutil.rmtree(r["cache"], ignore_errors=True)
+        shutil.rmtree(r["salida"], ignore_errors=True)
+    shutil.rmtree(r["cache"] / "dataset", ignore_errors=True)
+    r["train"].mkdir(parents=True, exist_ok=True)
+    r["val"].mkdir(parents=True, exist_ok=True)
+    cada = max(2, round(1 / 0.05))
+    for i, frame in enumerate(tqdm(frames, desc="Preparando TIFF", unit="frame")):
+        destino = r["val"] if (i + 1) % cada == 0 else r["train"]
+        tifffile.imwrite(destino / f"{frame.stem}.tif", leer_rgb(frame), compression="deflate")
+    meta = {"frames": len(frames), "train": len(list(r["train"].glob("*.tif"))), "val": len(list(r["val"].glob("*.tif")))}
+    (r["cache"] / "preparacion.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(json.dumps(meta, indent=2), flush=True)
 
 
-def crear_configuracion(argumentos, entrenamiento):
-    dispositivos = numero_gpus()
-    trabajadores = max(1, trabajadores_disponibles() // dispositivos) if entrenamiento else 0
-    config = create_n2n_config(
-        experiment_name=f"n2n_{argumentos.video}_{argumentos.modo}",
-        data_type="tiff",
-        axes=EJES,
-        patch_size=TAMANO_PARCHE,
-        batch_size=TAMANO_LOTE,
-        num_epochs=argumentos.epocas if entrenamiento else 1,
-        num_steps=argumentos.pasos_por_epoca if entrenamiento else None,
-        n_channels_in=NUM_CANALES,
-        n_channels_out=NUM_CANALES,
-    )
-    config.data_config.in_memory = False
-    config.data_config.num_workers = trabajadores
-    config.data_config.train_dataloader_params["num_workers"] = trabajadores
-    config.data_config.val_dataloader_params["num_workers"] = trabajadores
-    config.data_config.pred_dataloader_params["num_workers"] = 0
-    config.data_config.pred_dataloader_params["persistent_workers"] = False
-    config.data_config.pred_dataloader_params["prefetch_factor"] = None
-    config.algorithm_config.model.depth = PROFUNDIDAD_UNET
-    config.algorithm_config.model.num_channels_init = CANALES_INICIALES
-    config.algorithm_config.model.residual = CONEXION_RESIDUAL
-    config.algorithm_config.model.use_batch_norm = USAR_BATCH_NORM
-    config.algorithm_config.model.independent_channels = CANALES_INDEPENDIENTES
-    if entrenamiento:
-        config.training_config.trainer_params.update({
-            "accelerator": "gpu",
-            "devices": 1,
-            "strategy": "auto",
-            "precision": "32-true",
-            "benchmark": True,
-            "deterministic": False,
-            "gradient_clip_val": 1.0,
-            "gradient_clip_algorithm": "norm",
-            "enable_progress_bar": False,
-            "log_every_n_steps": 1,
-            "num_sanity_val_steps": 2,
-        })
-        config.training_config.checkpoint_params.update({"every_n_epochs": 1, "save_last": True, "save_top_k": -1})
-    else:
-        config.training_config.trainer_params.update({"accelerator": "gpu", "devices": 1, "strategy": "auto", "precision": "32-true", "enable_progress_bar": False})
-    return config
-
-
-class HistorialPerdida(Callback):
-    def __init__(self, ruta_csv):
-        super().__init__()
-        self.ruta_csv = Path(ruta_csv)
-        self.registros = []
-        self.inicio_epoca = None
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        self.inicio_epoca = time.monotonic()
-        if trainer.is_global_zero:
-            print(f"Época {trainer.current_epoch + 1}/{trainer.max_epochs} iniciada", flush=True)
-
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking or not trainer.is_global_zero:
-            return
-        metricas = trainer.callback_metrics
-
-        def valor(nombres):
-            for nombre in nombres:
-                if nombre in metricas:
-                    dato = metricas[nombre]
-                    return float(dato.detach().cpu().item() if isinstance(dato, torch.Tensor) else dato)
-            return np.nan
-
-        registro = {
-            "epoca": int(trainer.current_epoch + 1),
-            "train_loss": valor(("train_loss_epoch", "train_loss")),
-            "val_loss": valor(("val_loss", "validation_loss")),
-            "duracion_minutos": (time.monotonic() - self.inicio_epoca) / 60.0,
-        }
-        if not np.isfinite(registro["train_loss"]) or not np.isfinite(registro["val_loss"]):
-            raise RuntimeError("train_loss o val_loss contiene NaN o infinito.")
-        self.registros.append(registro)
-        pd.DataFrame(self.registros).to_csv(self.ruta_csv, index=False)
-        print(f"Época {registro['epoca']} terminada | train={registro['train_loss']:.6f} | val={registro['val_loss']:.6f}", flush=True)
-
-
-def entrenar(argumentos, rutas):
-    if not (rutas["dataset"] / "train" / "input").is_dir():
-        raise FileNotFoundError("No existe el dataset N2N. Ejecute --etapa preparar.")
-    shutil.rmtree(rutas["trabajo"], ignore_errors=True)
-    rutas["trabajo"].mkdir(parents=True, exist_ok=True)
-    config = crear_configuracion(argumentos, True)
-    contenido = config.model_dump_json(indent=2) if hasattr(config, "model_dump_json") else config.json(indent=2)
-    rutas["configuracion"].write_text(contenido, encoding="utf-8")
-    anterior = Path.cwd()
-    inicio = time.monotonic()
-    try:
-        os.chdir(rutas["trabajo"])
-        careamist = CAREamist(config=config, callbacks=[HistorialPerdida(rutas["historial"])], enable_progress_bar=False)
-        careamist.train(
-            train_data=str(rutas["dataset"] / "train" / "input"),
-            train_data_target=str(rutas["dataset"] / "train" / "target"),
-            val_data=str(rutas["dataset"] / "valid" / "input"),
-            val_data_target=str(rutas["dataset"] / "valid" / "target"),
-        )
-    finally:
-        os.chdir(anterior)
-    candidatos = sorted(rutas["trabajo"].rglob("*last.ckpt"), key=lambda ruta: ruta.stat().st_mtime)
+def checkpoint_final(r):
+    candidatos = sorted(r["work"].rglob("*last.ckpt"), key=lambda p: p.stat().st_mtime)
     if not candidatos:
-        candidatos = sorted(rutas["trabajo"].rglob("*.ckpt"), key=lambda ruta: ruta.stat().st_mtime)
+        candidatos = sorted(r["work"].rglob("*.ckpt"), key=lambda p: p.stat().st_mtime)
     if not candidatos:
-        raise RuntimeError(f"No se encontró un checkpoint en {rutas['trabajo']}")
-    shutil.copy2(candidatos[-1], rutas["checkpoint"])
-    tiempos = {"entrenamiento_minutos": (time.monotonic() - inicio) / 60.0}
-    rutas["tiempos"].write_text(json.dumps(tiempos, indent=2), encoding="utf-8")
-    print(f"Modelo guardado en {rutas['checkpoint']}", flush=True)
+        raise RuntimeError("CAREamics no genero checkpoint")
+    shutil.copy2(candidatos[-1], r["ckpt"])
 
 
-def extraer_predicciones(resultado):
-    predicciones, fuentes = resultado
-    salida = []
-    for prediccion in predicciones:
-        if isinstance(prediccion, torch.Tensor):
-            prediccion = prediccion.detach().cpu().numpy()
-        salida.append(convertir_uint8(prediccion))
-    return salida, fuentes
+def guardar_prediccion_png(file_path, img, *args, **kwargs):
+    """Escribe directamente una prediccion CAREamics como PNG RGB."""
+    destino = Path(file_path)
 
+    if destino.suffix.lower() != ".png":
+        destino = destino.with_suffix(".png")
 
-def inferir(argumentos, rutas, configuracion):
-    """Ejecuta inferencia N2N en lotes pequeños de cuatro frames."""
-    if not rutas["checkpoint"].is_file():
-        raise FileNotFoundError(
-            f"No existe el checkpoint: {rutas['checkpoint']}"
-        )
-
-    tamano_lote_inferencia = 4
-    frames = listar_imagenes(
-        rutas["fuente"],
-        argumentos.max_frames,
-    )
-
-    shutil.rmtree(
-        rutas["salida"],
-        ignore_errors=True,
-    )
-    shutil.rmtree(
-        rutas["inferencia"],
-        ignore_errors=True,
-    )
-
-    rutas["salida"].mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-    rutas["inferencia"].mkdir(
+    destino.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    inicio_inferencia = time.monotonic()
-    cantidad_lotes = (
-        len(frames) + tamano_lote_inferencia - 1
-    ) // tamano_lote_inferencia
+    imagen = np.asarray(img)
+    forma_original = imagen.shape
 
-    for numero_lote, inicio_lote in enumerate(
-        range(0, len(frames), tamano_lote_inferencia),
-        start=1,
+    while (
+        imagen.ndim > 3
+        and imagen.shape[0] == 1
     ):
-        lote = frames[
-            inicio_lote:
-            inicio_lote + tamano_lote_inferencia
-        ]
+        imagen = imagen[0]
 
-        carpeta_lote = (
-            rutas["inferencia"]
-            / f"lote_{numero_lote:05d}"
+    if (
+        imagen.ndim == 3
+        and imagen.shape[0] in (1, 3, 4)
+        and imagen.shape[-1] not in (1, 3, 4)
+    ):
+        imagen = np.moveaxis(
+            imagen,
+            0,
+            -1,
         )
 
-        carpeta_lote.mkdir(
-            parents=True,
-            exist_ok=False,
+    if imagen.ndim == 2:
+        imagen = np.repeat(
+            imagen[:, :, None],
+            3,
+            axis=2,
         )
 
-        tareas = [
-            (
-                frame,
-                carpeta_lote / f"{frame.stem}.tif",
-            )
-            for frame in lote
-        ]
-
-        with ThreadPoolExecutor(
-            max_workers=min(
-                trabajadores_disponibles(),
-                len(tareas),
-            )
-        ) as ejecutor:
-            list(
-                ejecutor.map(
-                    escribir_tiff,
-                    tareas,
-                )
-            )
-
-        print(
-            f"Inferencia N2N: lote {numero_lote}/{cantidad_lotes}, "
-            f"{len(lote)} frames",
-            flush=True,
+    if (
+        imagen.ndim == 3
+        and imagen.shape[-1] == 1
+    ):
+        imagen = np.repeat(
+            imagen,
+            3,
+            axis=2,
         )
 
-        limpiar_memoria()
+    if (
+        imagen.ndim == 3
+        and imagen.shape[-1] == 4
+    ):
+        imagen = imagen[:, :, :3]
 
-        config = crear_configuracion(
-            argumentos,
-            entrenamiento=False,
-        )
-
-        careamist = CAREamist(
-            config=config,
-            work_dir=str(
-                rutas["cache"]
-                / "prediccion"
-                / f"lote_{numero_lote:05d}"
-            ),
-            enable_progress_bar=False,
-        )
-
-        resultado = careamist.predict(
-            str(carpeta_lote),
-            batch_size=1,
-            tile_size=TAMANO_TILE,
-            tile_overlap=SOLAPAMIENTO_TILE,
-            axes=EJES,
-            data_type="tiff",
-            num_workers=0,
-            in_memory=False,
-            checkpoint=str(rutas["checkpoint"]),
-        )
-
-        predicciones, fuentes = extraer_predicciones(
-            resultado
-        )
-
-        if len(predicciones) != len(lote):
-            raise RuntimeError(
-                f"CAREamics devolvio {len(predicciones)} predicciones "
-                f"para un lote de {len(lote)} frames."
-            )
-
-        mapa_frames = {
-            frame.stem: frame
-            for frame in lote
-        }
-
-        if fuentes and len(fuentes) == len(predicciones):
-            pares = []
-
-            for fuente, prediccion in zip(
-                fuentes,
-                predicciones,
-            ):
-                nombre_fuente = Path(fuente).stem
-
-                if nombre_fuente not in mapa_frames:
-                    raise RuntimeError(
-                        "CAREamics devolvio una fuente desconocida: "
-                        f"{fuente}"
-                    )
-
-                pares.append(
-                    (
-                        mapa_frames[nombre_fuente],
-                        prediccion,
-                    )
-                )
-        else:
-            pares = list(
-                zip(lote, predicciones)
-            )
-
-        for frame, prediccion in pares:
-            guardar_png(
-                rutas["salida"] / frame.name,
-                prediccion,
-            )
-
-        del resultado
-        del predicciones
-        del careamist
-        del config
-
-        shutil.rmtree(
-            carpeta_lote,
-            ignore_errors=True,
-        )
-
-        limpiar_memoria()
-
-    cantidad = sum(
-        1
-        for archivo in rutas["salida"].glob("frame_*.png")
-        if archivo.is_file()
-    )
-
-    if cantidad != len(frames):
+    if (
+        imagen.ndim != 3
+        or imagen.shape[-1] != 3
+    ):
         raise RuntimeError(
-            f"Se esperaban {len(frames)} salidas N2N "
-            f"y se encontraron {cantidad}."
+            f"Forma de prediccion no reconocida: "
+            f"original={forma_original}, "
+            f"transformada={imagen.shape}"
         )
 
-    duracion = (
-        time.monotonic() - inicio_inferencia
-    ) / 60.0
-
-    if rutas["tiempos"].is_file():
-        tiempos = json.loads(
-            rutas["tiempos"].read_text(
-                encoding="utf-8"
-            )
-        )
-    else:
-        tiempos = {}
-
-    tiempos["inferencia_minutos"] = duracion
-    tiempos["frames_por_lote_inferencia"] = (
-        tamano_lote_inferencia
+    imagen = np.nan_to_num(
+        imagen,
+        nan=0.0,
+        posinf=255.0,
+        neginf=0.0,
     )
 
-    rutas["tiempos"].write_text(
-        json.dumps(
-            tiempos,
-            indent=2,
-            ensure_ascii=False,
+    imagen = np.clip(
+        imagen,
+        0,
+        255,
+    ).round().astype(np.uint8)
+
+    temporal = destino.with_suffix(".png.tmp")
+
+    correcta, codificada = cv2.imencode(
+        ".png",
+        cv2.cvtColor(
+            imagen,
+            cv2.COLOR_RGB2BGR,
         ),
-        encoding="utf-8",
+        [
+            cv2.IMWRITE_PNG_COMPRESSION,
+            3,
+        ],
     )
 
-    shutil.rmtree(
-        rutas["dataset"],
-        ignore_errors=True,
-    )
-    shutil.rmtree(
-        rutas["trabajo"],
-        ignore_errors=True,
-    )
-    shutil.rmtree(
-        rutas["inferencia"],
-        ignore_errors=True,
-    )
-    shutil.rmtree(
-        rutas["cache"] / "prediccion",
-        ignore_errors=True,
-    )
+    if not correcta:
+        raise RuntimeError(
+            f"No se pudo codificar {destino}"
+        )
 
-    clave = (
-        "n2n"
-        if argumentos.modo == "original"
-        else "n2n_sin_hud"
-    )
+    codificada.tofile(temporal)
+    temporal.replace(destino)
 
-    nombre_modelo = (
-        "Noise2Noise"
-        if argumentos.modo == "original"
-        else "Noise2Noise sin HUD"
-    )
 
-    configuracion[argumentos.video].setdefault(
-        "modelos",
-        {},
-    )
+def actualizar_registro(a, r, etiqueta, inicio, cantidad):
+    """Actualiza solamente el modelo actual bajo bloqueo de archivo."""
+    ruta_lock = RUTA_JSON.with_suffix(".lock")
 
-    configuracion[argumentos.video]["modelos"][clave] = {
-        "nombre": nombre_modelo,
+    registro = {
+        "nombre": etiqueta,
         "estado": "completada",
-        "modo": argumentos.modo,
-        "carpeta_salida": ruta_relativa(
-            rutas["salida"]
+        "modo": a.modo,
+        "carpeta_salida": relativa(
+            r["salida"]
         ),
-        "checkpoint": ruta_relativa(
-            rutas["checkpoint"]
+        "checkpoint": relativa(
+            r["ckpt"]
         ),
-        "configuracion": ruta_relativa(
-            rutas["configuracion"]
-        ),
-        "parejas": ruta_relativa(
-            rutas["parejas"]
-        ),
-        "historial": ruta_relativa(
-            rutas["historial"]
+        "configuracion": relativa(
+            r["config"]
         ),
         "frames_procesados": cantidad,
         "fecha_ejecucion": (
@@ -708,44 +283,275 @@ def inferir(argumentos, rutas, configuracion):
             .astimezone()
             .isoformat(timespec="seconds")
         ),
-        "tiempo_entrenamiento_minutos": tiempos.get(
-            "entrenamiento_minutos"
-        ),
-        "tiempo_inferencia_minutos": duracion,
+        "tiempo_total_minutos": (
+            time.monotonic() - inicio
+        ) / 60.0,
     }
 
-    guardar_configuracion(
-        configuracion
+    with ruta_lock.open("w") as archivo_lock:
+        fcntl.flock(
+            archivo_lock.fileno(),
+            fcntl.LOCK_EX,
+        )
+
+        configuracion = cargar_json()
+
+        configuracion[a.video].setdefault(
+            "modelos",
+            {},
+        )
+
+        configuracion[a.video]["modelos"][
+            r["nombre"]
+        ] = registro
+
+        temporal = RUTA_JSON.with_suffix(
+            ".json.tmp"
+        )
+
+        temporal.write_text(
+            json.dumps(
+                configuracion,
+                indent=2,
+                ensure_ascii=False,
+            ) + "\n",
+            encoding="utf-8",
+        )
+
+        temporal.replace(RUTA_JSON)
+
+        fcntl.flock(
+            archivo_lock.fileno(),
+            fcntl.LOCK_UN,
+        )
+
+
+def crear_config(a, entrenamiento):
+    """Crea la configuracion avanzada de Noise2Noise."""
+    trabajadores = (
+        max(
+            1,
+            min(
+                8,
+                int(
+                    os.environ.get(
+                        "SLURM_CPUS_PER_TASK",
+                        "8",
+                    )
+                ),
+            ),
+        )
+        if entrenamiento
+        else 4
+    )
+
+    trainer_params = {
+        "accelerator": "gpu",
+        "devices": 1,
+        "strategy": "auto",
+        "precision": "16-mixed",
+        "enable_progress_bar": True,
+        "log_every_n_steps": 10,
+        "benchmark": True,
+        "deterministic": False,
+    }
+
+    return create_advanced_n2n_config(
+        experiment_name=f"n2n_{a.video}_{a.modo}",
+        data_type="tiff",
+        axes=EJES,
+        patch_size=PARCHES,
+        batch_size=LOTE,
+        num_epochs=a.epocas,
+        num_steps=(
+            a.pasos_por_epoca
+            if entrenamiento
+            else None
+        ),
+        n_channels_in=N_CANALES,
+        n_channels_out=N_CANALES,
+        augmentations=AUMENTOS,
+        n_val_patches=8,
+        in_memory=False,
+        independent_channels=False,
+        normalization="mean_std",
+        normalization_params={
+            "per_channel": True,
+        },
+        num_workers=trabajadores,
+        trainer_params=trainer_params,
+        model_params={
+            "depth": 4,
+            "num_channels_init": 48,
+            "residual": True,
+            "use_batch_norm": False,
+        },
+        optimizer="Adam",
+        optimizer_params={
+            "lr": 1e-4,
+        },
+        lr_scheduler="ReduceLROnPlateau",
+        logger="tensorboard",
+        seed=SEMILLA,
+    )
+
+
+def preparar(a, r):
+    frames = listar(r["fuente"], a.max_frames)
+    if len(frames) < 10: raise RuntimeError("Se requieren al menos 10 frames")
+    if a.reiniciar: shutil.rmtree(r["cache"], ignore_errors=True); shutil.rmtree(r["salida"], ignore_errors=True)
+    shutil.rmtree(r["cache"] / "dataset", ignore_errors=True)
+    for c in (
+        r["train"] / "input",
+        r["train"] / "target",
+        r["val"] / "input",
+        r["val"] / "target",
+        r["predict_input"],
+    ):
+        c.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+    for frame in tqdm(
+        frames,
+        desc="Preparando TIFF de inferencia N2N",
+        unit="frame",
+    ):
+        tifffile.imwrite(
+            r["predict_input"] / f"{frame.stem}.tif",
+            leer_rgb(frame),
+            compression="deflate",
+        )
+
+    cada = max(2, round(1 / 0.05))
+    for i in tqdm(range(len(frames)-1), desc="Preparando parejas N2N", unit="pareja"):
+        base = r["val"] if (i + 1) % cada == 0 else r["train"]
+        nombre = f"pareja_{i:06d}.tif"
+        tifffile.imwrite(base / "input" / nombre, leer_rgb(frames[i]), compression="deflate")
+        tifffile.imwrite(base / "target" / nombre, leer_rgb(frames[i+1]), compression="deflate")
+
+
+def entrenar(a, r):
+    shutil.rmtree(r["work"], ignore_errors=True); r["work"].mkdir(parents=True, exist_ok=True)
+    config = crear_config(a, True); r["config"].write_text(config.model_dump_json(indent=2), encoding="utf-8")
+    careamist = CAREamist(config, work_dir=str(r["work"]), enable_progress_bar=True)
+    careamist.train(train_data=str(r["train"] / "input"), train_data_target=str(r["train"] / "target"),
+        val_data=str(r["val"] / "input"), val_data_target=str(r["val"] / "target"))
+    checkpoint_final(r)
+
+
+def inferir(a, r, inicio):
+    """Predice directamente a PNG sin acumular resultados en memoria."""
+    if not r["ckpt"].is_file():
+        raise FileNotFoundError(
+            f"No existe el checkpoint: {r['ckpt']}"
+        )
+
+    if not r["predict_input"].is_dir():
+        raise FileNotFoundError(
+            "No existe el conjunto TIFF de inferencia. "
+            "Ejecute primero la etapa preparar."
+        )
+
+    cantidad_entrada = sum(
+        1
+        for archivo in r["predict_input"].iterdir()
+        if archivo.is_file()
+        and archivo.suffix.lower() in (".tif", ".tiff")
+    )
+
+    if cantidad_entrada == 0:
+        raise RuntimeError(
+            f"No hay TIFF de inferencia en {r['predict_input']}"
+        )
+
+    shutil.rmtree(
+        r["salida"],
+        ignore_errors=True,
+    )
+
+    r["salida"].mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    config = crear_config(
+        a,
+        entrenamiento=False,
+    )
+
+    careamist = CAREamist(
+        config,
+        work_dir=str(r["work"]),
+        enable_progress_bar=True,
+    )
+
+    careamist.predict_to_disk(
+        pred_data=str(r["predict_input"]),
+        prediction_dir=r["salida"],
+        batch_size=1,
+        tile_size=TILE,
+        tile_overlap=OVERLAP,
+        axes=EJES,
+        data_type="tiff",
+        num_workers=4,
+        in_memory=False,
+        checkpoint=r["ckpt"],
+        write_type="custom",
+        write_extension=".png",
+        write_func=guardar_prediccion_png,
+        write_func_kwargs={},
+    )
+
+    cantidad_salida = sum(
+        1
+        for archivo in r["salida"].iterdir()
+        if archivo.is_file()
+        and archivo.name.startswith("frame_")
+        and archivo.suffix.lower() == ".png"
+    )
+
+    if cantidad_salida != cantidad_entrada:
+        raise RuntimeError(
+            f"Se esperaban {cantidad_entrada} PNG "
+            f"y se encontraron {cantidad_salida}."
+        )
+
+    etiqueta = (
+        "Noise2Noise"
+        if a.modo == "original"
+        else "Noise2Noise sin HUD"
+    )
+
+    actualizar_registro(
+        a,
+        r,
+        etiqueta,
+        inicio,
+        cantidad_salida,
     )
 
     print(
-        f"Inferencia N2N terminada: {cantidad} frames.",
+        f"Inferencia completada: {cantidad_salida} PNG.",
         flush=True,
     )
 
+    del careamist
+    del config
 
-def ejecutar(argumentos):
-    configuracion = cargar_configuracion()
-    rutas = obtener_rutas(argumentos, configuracion)
-    if argumentos.etapa in ("preparar", "todo"):
-        preparar(argumentos, rutas)
-    if argumentos.etapa in ("entrenar", "todo"):
-        entrenar(argumentos, rutas)
-    if argumentos.etapa in ("inferir", "todo"):
-        inferir(argumentos, rutas, configuracion)
+    gc.collect()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
 
 
 def main():
-    try:
-        ejecutar(obtener_argumentos())
-        return 0
-    except KeyboardInterrupt:
-        print("\nPipeline N2N interrumpido.", file=sys.stderr)
-        return 130
-    except Exception as error:
-        print(f"ERROR: {error}", file=sys.stderr)
-        return 1
-
+    a = argumentos(); inicio = time.monotonic(); cfg = cargar_json(); r = rutas_base(a, cfg, "n2n")
+    if a.etapa in ("preparar", "todo"): preparar(a, r)
+    if a.etapa in ("entrenar", "todo"): entrenar(a, r)
+    if a.etapa in ("inferir", "todo"): inferir(a, r, inicio)
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
