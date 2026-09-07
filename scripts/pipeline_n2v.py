@@ -403,15 +403,15 @@ def crear_config(a, entrenamiento):
         normalization_params={
             "per_channel": True,
         },
-        use_n2v2=False,
+        use_n2v2=True,
         roi_size=11,
         masked_pixel_percentage=0.2,
         struct_n2v_axes="none",
         num_workers=trabajadores,
         trainer_params=trainer_params,
         model_params={
-            "depth": 2,
-            "num_channels_init": 32,
+            "depth": 3,
+            "num_channels_init": 48,
             "residual": False,
             "use_batch_norm": False,
         },

@@ -1,28 +1,35 @@
-# Videos y resultados generados
-videos/*
+# Archivos multimedia pesados (videos crudos y secuencias de fotogramas)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.bmp
 
-# Conservar las carpetas principales de cada video
+# Permitir explícitamente reportes, métricas y archivos de configuración
+!videos/**/resumen.xlsx
+!videos/**/*.xlsx
+!videos/**/*.csv
+!videos/**/*.json
+!*.xlsx
+!*.csv
+
+# Conservar carpetas base de videos
+!videos/
 !videos/video1/
 !videos/video2/
 !videos/video3/
+!videos/*/.gitkeep
 
-# Ignorar su contenido
-videos/video1/*
-videos/video2/*
-videos/video3/*
-
-# Conservar las carpetas mediante archivos vacíos
-!videos/video1/.gitkeep
-!videos/video2/.gitkeep
-!videos/video3/.gitkeep
-
-# Entorno virtual
+# Entorno virtual y dependencias pesadas
 fac_env311/
-
-# Dependencia externa pesada
 ProPainter/
 
-# Archivos antiguos o temporales
+# Caché y temporales de entrenamiento
 cache/*
 !cache/.gitkeep
 
