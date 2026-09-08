@@ -4,6 +4,7 @@
 # 0. Imports
 import argparse
 import fcntl
+import gc
 import json
 import math
 import sys
