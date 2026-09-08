@@ -253,6 +253,10 @@ def entrenar(a, r, rutas_frames, dispositivo):
             torch.save({"estado": modelo.state_dict(), "depth": a.depth, "num_channels_init": a.num_channels_init}, r["ckpt"])
 
     print(f"Entrenamiento completado. Checkpoint guardado en {r['ckpt']}.")
+    del modelo, optimizador, scheduler
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def inferir(a, r, rutas_frames, dispositivo):

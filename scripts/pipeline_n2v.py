@@ -294,6 +294,10 @@ def entrenar(a, r):
     careamist = CAREamist(config, work_dir=str(r["work"]), enable_progress_bar=True)
     careamist.train(train_data=str(r["train"]), val_data=str(r["val"]))
     checkpoint_final(r)
+    del careamist, config
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def inferir(a, r, inicio):
@@ -309,18 +313,22 @@ def inferir(a, r, inicio):
     shutil.rmtree(r["salida"], ignore_errors=True)
     r["salida"].mkdir(parents=True, exist_ok=True)
 
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     config = crear_config(a, entrenamiento=False)
     careamist = CAREamist(config, work_dir=str(r["work"]), enable_progress_bar=True)
 
     careamist.predict_to_disk(
         pred_data=str(r["predict_input"]),
         prediction_dir=r["salida"],
-        batch_size=4,
-        tile_size=(512, 512),
-        tile_overlap=(48, 48),
+        batch_size=1,
+        tile_size=(256, 256),
+        tile_overlap=(32, 32),
         axes=EJES,
         data_type="tiff",
-        num_workers=4,
+        num_workers=2,
         in_memory=False,
         checkpoint=r["ckpt"],
         write_type="custom",
