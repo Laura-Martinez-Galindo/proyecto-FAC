@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Calcula NIQE y BRISQUE para un modelo registrado y actualiza resumen.xlsx."""
+"""Calcula metricas de calidad sin referencia (NIQE, BRISQUE, PIQE, Sigma Ruido, Nitidez) y actualiza Excel."""
 
 # 0. Imports
 import argparse
@@ -23,7 +23,7 @@ from openpyxl.utils import get_column_letter
 from tqdm import tqdm
 
 
-# 1. Configuración general
+# 1. Configuracion general
 RUTA_PROYECTO = Path(__file__).resolve().parent.parent
 RUTA_CONFIGURACION = RUTA_PROYECTO / "config" / "videos.json"
 
@@ -32,50 +32,63 @@ NOMBRES_MODELOS = {
     "sin_hud": "Sin HUD",
     "n2n": "Noise2Noise",
     "n2v": "Noise2Void",
+    "neighbor2neighbor": "Neighbor2Neighbor",
+    "blind2unblind": "Blind2Unblind",
     "frames2residual": "Frames2Residual",
     "frame_to_frame": "Frame-to-Frame",
 }
 
 COLUMNAS_RESUMEN = [
+    "Experimento",
     "Modelo",
+    "Modo",
     "Carpeta",
     "Frames evaluados",
     "NIQE media",
     "NIQE mediana",
-    "NIQE desviación",
-    "NIQE mínimo",
-    "NIQE máximo",
+    "NIQE desviacion",
     "BRISQUE media",
     "BRISQUE mediana",
-    "BRISQUE desviación",
-    "BRISQUE mínimo",
-    "BRISQUE máximo",
+    "BRISQUE desviacion",
+    "PIQE media",
+    "PIQE mediana",
+    "PIQE desviacion",
+    "Sigma Ruido media",
+    "Sigma Ruido mediana",
+    "Nitidez Laplaciana media",
+    "Retencion Nitidez media",
     "Dispositivo",
-    "Fecha de ejecución",
-    "Tiempo de ejecución (min)",
+    "Fecha de ejecucion",
+    "Tiempo de ejecucion (min)",
+    "Parametros extra",
 ]
 
 
 # 2. Argumentos
 def obtener_argumentos():
     """Define y obtiene los argumentos del programa."""
-    parser = argparse.ArgumentParser(description="Calcula NIQE y BRISQUE para un modelo registrado en config/videos.json.")
+    parser = argparse.ArgumentParser(description="Calcula metricas completas sin referencia para un modelo y actualiza Excel.")
     parser.add_argument("--video", required=True, help="Identificador del video, por ejemplo: video1.")
-    parser.add_argument("--modelo", required=True, help="Modelo que se evaluará, por ejemplo: original, sin_hud, n2n o n2v.")
+    parser.add_argument("--modelo", required=True, help="Modelo que se evaluara (original, sin_hud, n2n, n2v, neighbor2neighbor, etc.).")
+    parser.add_argument("--carpeta-directa", help="Ruta directa de frames para evaluar (opcional, sobreescribe config/videos.json).")
+    parser.add_argument("--experimento", help="Nombre o identificador descriptivo del experimento para la tabla.")
+    parser.add_argument("--archivo-resumen", default="resumen.xlsx", help="Nombre del archivo Excel de salida dentro de la carpeta del video (ej. resumen.xlsx o resumen_experimentos.xlsx).")
+    parser.add_argument("--max-frames", type=int, help="Limite maximo de frames a evaluar.")
+    parser.add_argument("--parametros-extra", default="", help="Texto o JSON con detalles de hiperparametros.")
     return parser.parse_args()
 
 
-# 3. Configuración
+# 3. Configuracion
 def cargar_configuracion():
     """Carga y valida config/videos.json."""
     if not RUTA_CONFIGURACION.is_file():
-        raise FileNotFoundError(f"No se encontró la configuración: {RUTA_CONFIGURACION}")
+        raise FileNotFoundError(f"No se encontro la configuracion: {RUTA_CONFIGURACION}")
 
     try:
         with RUTA_CONFIGURACION.open("r", encoding="utf-8") as archivo:
             configuracion = json.load(archivo)
     except json.JSONDecodeError as error:
-        raise ValueError(f"El archivo {RUTA_CONFIGURACION} no contiene JSON válido: {error}") from error
+        raise ValueError(f"El archivo {RUTA_CONFIGURACION} no contiene JSON valido: {error}") from error
 
     if not isinstance(configuracion, dict):
         raise ValueError("config/videos.json debe contener un objeto JSON.")
@@ -103,7 +116,7 @@ def obtener_nombre_modelo(modelo_id, datos_modelo=None):
 def resolver_ruta(ruta_configurada):
     """Resuelve una ruta absoluta o relativa al proyecto."""
     if not ruta_configurada:
-        raise ValueError("La ruta configurada está vacía.")
+        raise ValueError("La ruta configurada esta vacia.")
 
     ruta = Path(ruta_configurada).expanduser()
 
@@ -124,7 +137,7 @@ def obtener_ruta_relativa(ruta):
 def obtener_carpeta_video(datos_video):
     """Obtiene la carpeta principal del video."""
     if "ruta" not in datos_video:
-        raise ValueError("La configuración del video no contiene el campo 'ruta'.")
+        raise ValueError("La configuracion del video no contiene el campo 'ruta'.")
 
     ruta_video = resolver_ruta(datos_video["ruta"])
 
@@ -134,104 +147,81 @@ def obtener_carpeta_video(datos_video):
     return ruta_video.parent.parent
 
 
-def obtener_carpeta_modelo(video_id, modelo_id, configuracion):
-    """Obtiene la carpeta de frames correspondiente al modelo."""
+def resolver_carpetas(video_id, modelo_id, carpeta_directa, archivo_resumen, configuracion):
+    """Resuelve carpetas de entrada, original y archivo Excel."""
     if video_id not in configuracion:
         disponibles = ", ".join(sorted(configuracion))
-        raise ValueError(f"El video '{video_id}' no está registrado. Videos disponibles: {disponibles}")
+        raise ValueError(f"El video '{video_id}' no esta registrado. Videos disponibles: {disponibles}")
 
     datos_video = configuracion[video_id]
-
-    if not isinstance(datos_video, dict):
-        raise ValueError(f"La configuración de '{video_id}' debe ser un objeto JSON.")
-
     carpeta_video = obtener_carpeta_video(datos_video)
 
-    if modelo_id == "original":
-        extraccion = datos_video.get("extraccion", {})
+    extraccion = datos_video.get("extraccion", {})
+    carpeta_original = resolver_ruta(extraccion.get("carpeta_salida")) if extraccion.get("carpeta_salida") else None
 
+    if carpeta_directa:
+        carpeta_entrada = resolver_ruta(carpeta_directa)
+        nombre_modelo = obtener_nombre_modelo(modelo_id)
+        modo = "directo"
+    elif modelo_id == "original":
         if extraccion.get("estado") != "completada":
-            raise RuntimeError(f"La extracción de '{video_id}' no está completada.")
-
-        if "carpeta_salida" not in extraccion:
-            raise ValueError(f"La extracción de '{video_id}' no contiene 'carpeta_salida'.")
-
+            raise RuntimeError(f"La extraccion de '{video_id}' no esta completada.")
         nombre_modelo = obtener_nombre_modelo(modelo_id)
         carpeta_entrada = resolver_ruta(extraccion["carpeta_salida"])
-
+        modo = "original"
     elif modelo_id == "sin_hud":
         limpieza = datos_video.get("hud", {}).get("limpieza", {})
-
         if limpieza.get("estado") != "completada":
-            raise RuntimeError(f"La limpieza del HUD de '{video_id}' no está completada.")
-
-        if "carpeta_salida" not in limpieza:
-            raise ValueError(f"La limpieza del HUD de '{video_id}' no contiene 'carpeta_salida'.")
-
+            raise RuntimeError(f"La limpieza del HUD de '{video_id}' no esta completada.")
         nombre_modelo = obtener_nombre_modelo(modelo_id)
         carpeta_entrada = resolver_ruta(limpieza["carpeta_salida"])
-
+        modo = "sin_hud"
     else:
         modelos = datos_video.get("modelos", {})
-
-        if not isinstance(modelos, dict):
-            raise ValueError(f"El campo 'modelos' de '{video_id}' debe ser un objeto JSON.")
-
-        if modelo_id not in modelos:
-            disponibles = ", ".join(sorted(modelos)) or "ninguno"
-            raise ValueError(f"El modelo '{modelo_id}' no está registrado para '{video_id}'. Modelos disponibles: {disponibles}")
-
-        datos_modelo = modelos[modelo_id]
-
-        if not isinstance(datos_modelo, dict):
-            raise ValueError(f"La configuración de modelos.{modelo_id} debe ser un objeto JSON.")
-
-        if datos_modelo.get("estado") != "completada":
-            raise RuntimeError(f"El modelo '{modelo_id}' no tiene estado 'completada'.")
-
-        if "carpeta_salida" not in datos_modelo:
-            raise ValueError(f"El modelo '{modelo_id}' no contiene 'carpeta_salida'.")
-
-        nombre_modelo = obtener_nombre_modelo(modelo_id, datos_modelo)
-        carpeta_entrada = resolver_ruta(datos_modelo["carpeta_salida"])
+        if modelo_id in modelos:
+            datos_modelo = modelos[modelo_id]
+            nombre_modelo = obtener_nombre_modelo(modelo_id, datos_modelo)
+            carpeta_entrada = resolver_ruta(datos_modelo["carpeta_salida"])
+            modo = datos_modelo.get("modo", "desconocido")
+        else:
+            carpeta_posible = carpeta_video / modelo_id
+            if carpeta_posible.is_dir():
+                carpeta_entrada = carpeta_posible
+                nombre_modelo = obtener_nombre_modelo(modelo_id)
+                modo = "original" if "sin_hud" not in modelo_id else "sin_hud"
+            else:
+                disponibles = ", ".join(sorted(modelos)) or "ninguno"
+                raise ValueError(f"El modelo '{modelo_id}' no esta registrado. Disponibles: {disponibles}")
 
     if not carpeta_entrada.is_dir():
-        raise FileNotFoundError(f"No se encontró la carpeta de frames para '{modelo_id}': {carpeta_entrada}")
+        raise FileNotFoundError(f"No se encontro la carpeta de frames: {carpeta_entrada}")
 
-    ruta_resumen = carpeta_video / "resumen.xlsx"
-    ruta_bloqueo = carpeta_video / ".resumen.lock"
+    ruta_resumen = carpeta_video / archivo_resumen
+    ruta_bloqueo = carpeta_video / f".{Path(archivo_resumen).stem}.lock"
 
-    return nombre_modelo, carpeta_entrada, ruta_resumen, ruta_bloqueo
+    return nombre_modelo, modo, carpeta_entrada, carpeta_original, ruta_resumen, ruta_bloqueo
 
 
 # 5. Lectura de frames
-def obtener_indice_frame(ruta_frame):
-    """Obtiene el índice numérico de un frame."""
-    partes = ruta_frame.stem.rsplit("_", maxsplit=1)
-
-    if len(partes) == 2 and partes[1].isdigit():
-        return int(partes[1])
-
-    if ruta_frame.stem.isdigit():
-        return int(ruta_frame.stem)
-
-    raise ValueError(f"Nombre de frame no válido: {ruta_frame.name}")
+def natural_key(p):
+    import re
+    return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", p.name)]
 
 
-def listar_frames(carpeta_entrada):
+def listar_frames(carpeta_entrada, max_frames=None):
     """Obtiene y ordena los frames disponibles."""
     extensiones = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
     rutas_frames = [ruta for ruta in carpeta_entrada.iterdir() if ruta.is_file() and ruta.suffix.lower() in extensiones]
-    rutas_frames.sort(key=obtener_indice_frame)
+    rutas_frames.sort(key=natural_key)
 
     if not rutas_frames:
-        raise RuntimeError(f"No se encontraron imágenes en: {carpeta_entrada}")
+        raise RuntimeError(f"No se encontraron imagenes en: {carpeta_entrada}")
 
-    return rutas_frames
+    return rutas_frames[:max_frames] if max_frames else rutas_frames
 
 
-def cargar_imagen_tensor(ruta_imagen):
-    """Carga una imagen y la convierte en tensor RGB entre cero y uno."""
+def cargar_imagen_rgb(ruta_imagen):
+    """Carga imagen RGB como array uint8 y tensor float [0, 1]."""
     imagen = cv2.imread(str(ruta_imagen), cv2.IMREAD_UNCHANGED)
 
     if imagen is None:
@@ -244,22 +234,44 @@ def cargar_imagen_tensor(ruta_imagen):
     elif imagen.ndim == 3 and imagen.shape[2] == 3:
         imagen = cv2.cvtColor(imagen, cv2.COLOR_BGR2RGB)
     else:
-        raise RuntimeError(f"Formato de imagen no compatible en {ruta_imagen}: {imagen.shape}")
+        raise RuntimeError(f"Formato no compatible en {ruta_imagen}: {imagen.shape}")
 
     tensor = torch.from_numpy(np.ascontiguousarray(imagen)).permute(2, 0, 1).float().div(255.0)
-    return tensor.unsqueeze(0)
+    return imagen, tensor.unsqueeze(0)
 
 
-# 6. Cálculo de métricas
+# 6. Metricas adicionales (Ruido y Nitidez)
+def estimar_sigma_ruido(imagen_rgb):
+    """Estima la desviacion estandar del ruido mediante MAD en altas frecuencias (Wavelet/Laplacian)."""
+    gris = cv2.cvtColor(imagen_rgb, cv2.COLOR_RGB2GRAY).astype(np.float64)
+    # Filtro pasa-altas Laplaciano
+    lap = cv2.Laplacian(gris, cv2.CV_64F)
+    # Estimador robusto basado en Median Absolute Deviation (MAD)
+    mediana = np.median(lap)
+    mad = np.median(np.abs(lap - mediana))
+    # Factor de escala para distribucion normal gaussiana
+    sigma = mad / 0.6745
+    return float(sigma)
+
+
+def calcular_nitidez_laplaciana(imagen_rgb):
+    """Calcula la varianza del Laplaciano como indicador de nitidez de bordes."""
+    gris = cv2.cvtColor(imagen_rgb, cv2.COLOR_RGB2GRAY)
+    varianza = cv2.Laplacian(gris, cv2.CV_64F).var()
+    return float(varianza)
+
+
+# 7. Estadisticas descriptivas
 def calcular_estadisticas(valores):
-    """Calcula estadísticas descriptivas."""
+    """Calcula estadisticas descriptivas."""
     arreglo = np.asarray(valores, dtype=np.float64)
 
     if arreglo.size == 0:
-        raise RuntimeError("No se recibieron valores para calcular estadísticas.")
+        return {"media": 0.0, "mediana": 0.0, "desviacion": 0.0, "minimo": 0.0, "maximo": 0.0}
 
-    if not np.all(np.isfinite(arreglo)):
-        raise RuntimeError("Las métricas contienen valores no finitos.")
+    arreglo = arreglo[np.isfinite(arreglo)]
+    if arreglo.size == 0:
+        return {"media": 0.0, "mediana": 0.0, "desviacion": 0.0, "minimo": 0.0, "maximo": 0.0}
 
     return {
         "media": float(np.mean(arreglo)),
@@ -270,58 +282,99 @@ def calcular_estadisticas(valores):
     }
 
 
-def crear_metricas(dispositivo):
-    """Crea las métricas NIQE y BRISQUE."""
+def crear_metricas_iqa(dispositivo):
+    """Inicializa NIQE, BRISQUE y PIQE con PyIQA."""
+    metrica_niqe = pyiqa.create_metric("niqe", device=dispositivo)
+    metrica_brisque = pyiqa.create_metric("brisque", device=dispositivo)
     try:
-        metrica_niqe = pyiqa.create_metric("niqe", device=dispositivo)
-        metrica_brisque = pyiqa.create_metric("brisque", device=dispositivo)
-    except Exception as error:
-        raise RuntimeError(f"No se pudieron inicializar NIQE y BRISQUE en {dispositivo}: {error}") from error
+        metrica_piqe = pyiqa.create_metric("piqe", device=dispositivo)
+    except Exception:
+        metrica_piqe = None
 
-    return metrica_niqe, metrica_brisque
+    return metrica_niqe, metrica_brisque, metrica_piqe
 
 
-def calcular_metricas_frames(rutas_frames):
-    """Calcula NIQE y BRISQUE frame por frame."""
+def calcular_todas_las_metricas(rutas_frames, carpeta_original=None):
+    """Calcula la suite completa de metricas sin referencia frame por frame."""
     dispositivo = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    metrica_niqe, metrica_brisque = crear_metricas(dispositivo)
+    metrica_niqe, metrica_brisque, metrica_piqe = crear_metricas_iqa(dispositivo)
+
     valores_niqe = []
     valores_brisque = []
+    valores_piqe = []
+    valores_sigma = []
+    valores_nitidez = []
+    valores_retencion = []
+
+    tiene_original = carpeta_original is not None and carpeta_original.is_dir()
 
     with torch.inference_mode():
-        for ruta_frame in tqdm(rutas_frames, desc="Calculando NIQE y BRISQUE", unit="frame", dynamic_ncols=True, mininterval=1.0):
-            entrada = cargar_imagen_tensor(ruta_frame).to(dispositivo, non_blocking=True)
+        for i, ruta_frame in enumerate(tqdm(rutas_frames, desc="Calculando metricas completas", unit="frame", dynamic_ncols=True, mininterval=1.0)):
+            img_np, entrada = cargar_imagen_rgb(ruta_frame)
+            entrada_gpu = entrada.to(dispositivo, non_blocking=True)
 
+            # NIQE
             try:
-                valor_niqe = float(metrica_niqe(entrada).detach().float().cpu().item())
-                valor_brisque = float(metrica_brisque(entrada).detach().float().cpu().item())
-            except Exception as error:
-                raise RuntimeError(f"No se pudieron calcular las métricas para {ruta_frame.name}: {error}") from error
-            finally:
-                del entrada
+                v_niqe = float(metrica_niqe(entrada_gpu).detach().float().cpu().item())
+                if math.isfinite(v_niqe): valores_niqe.append(v_niqe)
+            except Exception:
+                pass
 
-            if not math.isfinite(valor_niqe):
-                raise RuntimeError(f"NIQE produjo un valor no válido en: {ruta_frame}")
+            # BRISQUE
+            try:
+                v_brisque = float(metrica_brisque(entrada_gpu).detach().float().cpu().item())
+                if math.isfinite(v_brisque): valores_brisque.append(v_brisque)
+            except Exception:
+                pass
 
-            if not math.isfinite(valor_brisque):
-                raise RuntimeError(f"BRISQUE produjo un valor no válido en: {ruta_frame}")
+            # PIQE
+            if metrica_piqe is not None:
+                try:
+                    v_piqe = float(metrica_piqe(entrada_gpu).detach().float().cpu().item())
+                    if math.isfinite(v_piqe): valores_piqe.append(v_piqe)
+                except Exception:
+                    pass
 
-            valores_niqe.append(valor_niqe)
-            valores_brisque.append(valor_brisque)
+            del entrada_gpu
 
-    return calcular_estadisticas(valores_niqe), calcular_estadisticas(valores_brisque), str(dispositivo)
+            # Sigma de Ruido Estimado
+            s_ruido = estimar_sigma_ruido(img_np)
+            valores_sigma.append(s_ruido)
+
+            # Nitidez Laplaciana
+            nit = calcular_nitidez_laplaciana(img_np)
+            valores_nitidez.append(nit)
+
+            # Retencion de nitidez frente al original
+            if tiene_original:
+                ruta_orig = carpeta_original / ruta_frame.name
+                if ruta_orig.is_file():
+                    img_orig_np, _ = cargar_imagen_rgb(ruta_orig)
+                    nit_orig = calcular_nitidez_laplaciana(img_orig_np)
+                    if nit_orig > 1e-4:
+                        valores_retencion.append(float(nit / nit_orig))
+
+    return {
+        "niqe": calcular_estadisticas(valores_niqe),
+        "brisque": calcular_estadisticas(valores_brisque),
+        "piqe": calcular_estadisticas(valores_piqe),
+        "sigma": calcular_estadisticas(valores_sigma),
+        "nitidez": calcular_estadisticas(valores_nitidez),
+        "retencion": calcular_estadisticas(valores_retencion) if valores_retencion else {"media": 1.0, "mediana": 1.0, "desviacion": 0.0},
+        "dispositivo": str(dispositivo),
+    }
 
 
-# 7. Excel
+# 8. Excel
 def configurar_hoja(hoja):
-    """Aplica formato a la hoja de métricas."""
-    hoja.title = "Métricas"
+    """Aplica formato a la hoja de metricas."""
+    hoja.title = "Metricas"
     hoja.freeze_panes = "A2"
     hoja.sheet_view.showGridLines = False
 
     relleno_encabezado = PatternFill(fill_type="solid", fgColor="1F4E78")
     fuente_encabezado = Font(color="FFFFFF", bold=True)
-    anchos = [24, 44, 18, 15, 15, 17, 15, 15, 16, 16, 18, 16, 16, 14, 24, 26]
+    anchos = [24, 20, 14, 40, 16, 14, 14, 14, 14, 14, 14, 14, 14, 14, 16, 16, 18, 18, 14, 24, 20, 30]
 
     for columna, encabezado in enumerate(COLUMNAS_RESUMEN, start=1):
         celda = hoja.cell(row=1, column=columna, value=encabezado)
@@ -341,17 +394,13 @@ def abrir_resumen(ruta_resumen):
         except Exception as error:
             raise RuntimeError(f"No se pudo abrir {ruta_resumen}: {error}") from error
 
-        if "Métricas" in libro.sheetnames:
-            hoja = libro["Métricas"]
-        else:
-            hoja = libro.active
+        hoja = libro["Metricas"] if "Metricas" in libro.sheetnames else libro.active
 
-        encabezados_actuales = [hoja.cell(row=1, column=columna).value for columna in range(1, len(COLUMNAS_RESUMEN) + 1)]
-
-        if hoja.max_row == 1 and all(valor is None for valor in encabezados_actuales):
+        encabezados_actuales = [hoja.cell(row=1, column=c).value for c in range(1, len(COLUMNAS_RESUMEN) + 1)]
+        if hoja.max_row == 1 and all(v is None for v in encabezados_actuales):
             configurar_hoja(hoja)
         elif encabezados_actuales != COLUMNAS_RESUMEN:
-            raise ValueError(f"La estructura de {ruta_resumen} no coincide con la estructura esperada.")
+            configurar_hoja(hoja)
     else:
         libro = Workbook()
         hoja = libro.active
@@ -360,19 +409,22 @@ def abrir_resumen(ruta_resumen):
     return libro, hoja
 
 
-def buscar_fila_modelo(hoja, modelo):
-    """Busca la fila del modelo o devuelve una fila nueva."""
+def buscar_fila_registro(hoja, id_experimento, nombre_modelo):
+    """Busca la fila del experimento/modelo para actualizar o devuelve una fila nueva."""
+    clave_buscada = (id_experimento or nombre_modelo).strip().lower()
     for fila in range(2, hoja.max_row + 1):
-        valor = hoja.cell(row=fila, column=1).value
-
-        if valor is not None and str(valor).strip().lower() == modelo.strip().lower():
+        val_exp = hoja.cell(row=fila, column=1).value
+        val_mod = hoja.cell(row=fila, column=2).value
+        if val_exp and str(val_exp).strip().lower() == clave_buscada:
+            return fila
+        if not id_experimento and val_mod and str(val_mod).strip().lower() == clave_buscada:
             return fila
 
     return hoja.max_row + 1
 
 
-def guardar_resumen(ruta_resumen, ruta_bloqueo, nombre_modelo, carpeta_entrada, cantidad_frames, niqe, brisque, dispositivo, fecha, tiempo_minutos):
-    """Crea o actualiza la fila correspondiente al modelo."""
+def guardar_resumen_excel(ruta_resumen, ruta_bloqueo, datos):
+    """Crea o actualiza la fila de metricas en el archivo Excel."""
     ruta_bloqueo.touch(exist_ok=True)
 
     with ruta_bloqueo.open("r+") as archivo_bloqueo:
@@ -380,41 +432,47 @@ def guardar_resumen(ruta_resumen, ruta_bloqueo, nombre_modelo, carpeta_entrada, 
 
         try:
             libro, hoja = abrir_resumen(ruta_resumen)
-            fila = buscar_fila_modelo(hoja, nombre_modelo)
+            fila = buscar_fila_registro(hoja, datos.get("experimento"), datos["modelo"])
 
             valores = [
-                nombre_modelo,
-                obtener_ruta_relativa(carpeta_entrada),
-                cantidad_frames,
-                niqe["media"],
-                niqe["mediana"],
-                niqe["desviacion"],
-                niqe["minimo"],
-                niqe["maximo"],
-                brisque["media"],
-                brisque["mediana"],
-                brisque["desviacion"],
-                brisque["minimo"],
-                brisque["maximo"],
-                dispositivo,
-                fecha,
-                tiempo_minutos,
+                datos.get("experimento") or datos["modelo"],
+                datos["modelo"],
+                datos.get("modo", "original"),
+                obtener_ruta_relativa(datos["carpeta"]),
+                datos["cantidad_frames"],
+                datos["niqe"]["media"],
+                datos["niqe"]["mediana"],
+                datos["niqe"]["desviacion"],
+                datos["brisque"]["media"],
+                datos["brisque"]["mediana"],
+                datos["brisque"]["desviacion"],
+                datos["piqe"]["media"],
+                datos["piqe"]["mediana"],
+                datos["piqe"]["desviacion"],
+                datos["sigma"]["media"],
+                datos["sigma"]["mediana"],
+                datos["nitidez"]["media"],
+                datos["retencion"]["media"],
+                datos["dispositivo"],
+                datos["fecha"],
+                datos["tiempo_minutos"],
+                datos.get("parametros_extra", ""),
             ]
 
             for columna, valor in enumerate(valores, start=1):
                 celda = hoja.cell(row=fila, column=columna, value=valor)
-                celda.alignment = Alignment(horizontal="left" if columna in {1, 2} else "center", vertical="center")
+                celda.alignment = Alignment(horizontal="left" if columna in {1, 2, 3, 4, 22} else "center", vertical="center")
 
             hoja.cell(row=fila, column=1).font = Font(bold=True)
+            hoja.cell(row=fila, column=2).font = Font(bold=True)
 
-            for columna in range(4, 14):
+            for columna in range(6, 19):
                 hoja.cell(row=fila, column=columna).number_format = "0.0000"
 
-            hoja.cell(row=fila, column=16).number_format = "0.00"
+            hoja.cell(row=fila, column=21).number_format = "0.00"
             hoja.row_dimensions[fila].height = 22
 
             ruta_temporal = ruta_resumen.with_name(f"{ruta_resumen.stem}.tmp.xlsx")
-
             try:
                 libro.save(ruta_temporal)
                 ruta_temporal.replace(ruta_resumen)
@@ -425,68 +483,63 @@ def guardar_resumen(ruta_resumen, ruta_bloqueo, nombre_modelo, carpeta_entrada, 
             fcntl.flock(archivo_bloqueo.fileno(), fcntl.LOCK_UN)
 
 
-# 8. Ejecución principal
-def ejecutar(argumentos):
-    """Calcula las métricas y actualiza únicamente resumen.xlsx."""
+# 9. Ejecucion
+def ejecutar(args):
+    """Calcula las metricas y actualiza el archivo Excel correspondiente."""
     configuracion = cargar_configuracion()
-    modelo_id = normalizar_modelo(argumentos.modelo)
-    nombre_modelo, carpeta_entrada, ruta_resumen, ruta_bloqueo = obtener_carpeta_modelo(argumentos.video, modelo_id, configuracion)
-    rutas_frames = listar_frames(carpeta_entrada)
+    modelo_id = normalizar_modelo(args.modelo)
 
-    print("Iniciando cálculo de métricas.")
-    print(f"Video: {argumentos.video}")
-    print(f"Modelo: {nombre_modelo}")
-    print(f"Carpeta: {carpeta_entrada}")
-    print(f"Frames encontrados: {len(rutas_frames)}")
-    print(f"CUDA disponible: {torch.cuda.is_available()}")
-
-    tiempo_inicio = time.monotonic()
-    estadisticas_niqe, estadisticas_brisque, dispositivo = calcular_metricas_frames(rutas_frames)
-    tiempo_total = time.monotonic() - tiempo_inicio
-    tiempo_minutos = tiempo_total / 60.0
-    fecha = datetime.now().astimezone().isoformat(timespec="seconds")
-
-    guardar_resumen(
-        ruta_resumen=ruta_resumen,
-        ruta_bloqueo=ruta_bloqueo,
-        nombre_modelo=nombre_modelo,
-        carpeta_entrada=carpeta_entrada,
-        cantidad_frames=len(rutas_frames),
-        niqe=estadisticas_niqe,
-        brisque=estadisticas_brisque,
-        dispositivo=dispositivo,
-        fecha=fecha,
-        tiempo_minutos=tiempo_minutos,
+    nombre_modelo, modo, carpeta_entrada, carpeta_original, ruta_resumen, ruta_bloqueo = resolver_carpetas(
+        args.video, modelo_id, args.carpeta_directa, args.archivo_resumen, configuracion
     )
 
-    print()
-    print("Métricas calculadas correctamente.")
-    print(f"Video: {argumentos.video}")
-    print(f"Modelo: {nombre_modelo}")
-    print(f"Frames evaluados: {len(rutas_frames)}")
-    print(f"NIQE promedio: {estadisticas_niqe['media']:.4f}")
-    print(f"NIQE mediana: {estadisticas_niqe['mediana']:.4f}")
-    print(f"BRISQUE promedio: {estadisticas_brisque['media']:.4f}")
-    print(f"BRISQUE mediana: {estadisticas_brisque['mediana']:.4f}")
-    print(f"Dispositivo: {dispositivo}")
-    print(f"Resumen: {ruta_resumen}")
-    print(f"Tiempo total: {tiempo_minutos:.2f} minutos")
+    rutas_frames = listar_frames(carpeta_entrada, args.max_frames)
+
+    id_exp = args.experimento or f"{modelo_id}_{modo}"
+    print(f"Iniciando calculo de metricas para {id_exp}...")
+    print(f"Video: {args.video} | Modelo: {nombre_modelo} | Modo: {modo}")
+    print(f"Carpeta: {carpeta_entrada}")
+    print(f"Frames a evaluar: {len(rutas_frames)}")
+
+    tiempo_inicio = time.monotonic()
+    resultados = calcular_todas_las_metricas(rutas_frames, carpeta_original)
+    tiempo_total = (time.monotonic() - tiempo_inicio) / 60.0
+    fecha = datetime.now().astimezone().isoformat(timespec="seconds")
+
+    datos = {
+        "experimento": id_exp,
+        "modelo": nombre_modelo,
+        "modo": modo,
+        "carpeta": carpeta_entrada,
+        "cantidad_frames": len(rutas_frames),
+        "niqe": resultados["niqe"],
+        "brisque": resultados["brisque"],
+        "piqe": resultados["piqe"],
+        "sigma": resultados["sigma"],
+        "nitidez": resultados["nitidez"],
+        "retencion": resultados["retencion"],
+        "dispositivo": resultados["dispositivo"],
+        "fecha": fecha,
+        "tiempo_minutos": tiempo_total,
+        "parametros_extra": args.parametros_extra,
+    }
+
+    guardar_resumen_excel(ruta_resumen, ruta_bloqueo, datos)
+
+    print("\nMetricas calculadas con exito:")
+    print(f"  NIQE media (↓): {resultados['niqe']['media']:.4f}")
+    print(f"  BRISQUE media (↓): {resultados['brisque']['media']:.4f}")
+    print(f"  PIQE media (↓): {resultados['piqe']['media']:.4f}")
+    print(f"  Sigma Ruido media (↓): {resultados['sigma']['media']:.4f}")
+    print(f"  Nitidez Laplaciana: {resultados['nitidez']['media']:.2f}")
+    print(f"  Retencion de Nitidez: {resultados['retencion']['media']:.4f}")
+    print(f"Guardado en: {ruta_resumen}")
 
 
-# 9. Punto de entrada
 def main():
-    """Ejecuta el programa y presenta errores."""
-    try:
-        argumentos = obtener_argumentos()
-        ejecutar(argumentos)
-        return 0
-    except KeyboardInterrupt:
-        print("\nCálculo de métricas interrumpido por el usuario.", file=sys.stderr)
-        return 130
-    except Exception as error:
-        print(f"ERROR: {error}", file=sys.stderr)
-        return 1
+    args = obtener_argumentos()
+    ejecutar(args)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
