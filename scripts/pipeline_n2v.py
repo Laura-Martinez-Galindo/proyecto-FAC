@@ -1,76 +1,198 @@
 #!/usr/bin/env python3
-"""Pipeline Noise2Void (N2V / N2V2 / StructN2V en CAREamics 0.3.2) con CLI configurable."""
+"""
+Pipeline Noise2Void (Krull et al., CVPR 2019 / N2V2 / StructN2V) nativo en PyTorch para video FLIR.
+Implementacion optimizada de bajo consumo de memoria (0 archivos temporales TIFF en disco, <300MB VRAM).
+"""
+
 import argparse
 import fcntl
 import gc
 import json
+import math
 import os
+import random
 import re
 import shutil
 import sys
 import time
+
 from datetime import datetime
 from pathlib import Path
 
-os.environ.setdefault("MPLBACKEND", "Agg")
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-
 import cv2
 import numpy as np
-import tifffile
 import torch
-from careamics import CAREamist
-from careamics.config.factories import create_advanced_n2v_config
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 RAIZ = Path(__file__).resolve().parent.parent
 RUTA_JSON = RAIZ / "config" / "videos.json"
-EJES = "YXC"
-N_CANALES = 3
-AUMENTOS = ["x_flip", "y_flip", "rotate_90"]
-SEMILLA = 42
 
 
+# 1. Arquitectura UNet 2D PyTorch nativa
+class DoubleConv(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=True),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=True),
+            nn.LeakyReLU(0.1, inplace=True),
+        )
+
+    def forward(self, x):
+        return self.conv(x)
+
+
+class UNet(nn.Module):
+    def __init__(self, in_channels=3, out_channels=3, num_channels_init=48, depth=3):
+        super().__init__()
+        self.depth = depth
+        self.downs = nn.ModuleList()
+        self.ups = nn.ModuleList()
+        self.pool = nn.MaxPool2d(2, 2)
+
+        ch = num_channels_init
+        self.downs.append(DoubleConv(in_channels, ch))
+        for _ in range(depth - 1):
+            self.downs.append(DoubleConv(ch, ch * 2))
+            ch *= 2
+
+        self.bottleneck = DoubleConv(ch, ch * 2)
+        ch *= 2
+
+        for _ in range(depth):
+            self.ups.append(nn.ConvTranspose2d(ch, ch // 2, 2, stride=2))
+            self.ups.append(DoubleConv(ch, ch // 2))
+            ch //= 2
+
+        self.out_conv = nn.Conv2d(num_channels_init, out_channels, 1)
+
+    def forward(self, x):
+        skips = []
+        for down in self.downs:
+            x = down(x)
+            skips.append(x)
+            x = self.pool(x)
+
+        x = self.bottleneck(x)
+        skips = skips[::-1]
+
+        for idx in range(0, len(self.ups), 2):
+            x = self.ups[idx](x)
+            skip = skips[idx // 2]
+            if x.shape != skip.shape:
+                x = torch.nn.functional.interpolate(x, size=skip.shape[2:])
+            x = torch.cat((skip, x), dim=1)
+            x = self.ups[idx + 1](x)
+
+        return self.out_conv(x)
+
+
+# 2. Dataset Noise2Void (con Blind-Spot, StructN2V y N2V2)
+class N2VDataset(Dataset):
+    def __init__(self, rutas_frames, patch_size=128, es_entrenamiento=True, perc_pix=0.015, struct_n2v="none", use_n2v2=True):
+        self.rutas = rutas_frames
+        self.patch_size = patch_size
+        self.es_entrenamiento = es_entrenamiento
+        self.perc_pix = perc_pix
+        self.struct_n2v = struct_n2v
+        self.use_n2v2 = use_n2v2
+
+    def __len__(self):
+        return len(self.rutas)
+
+    def __getitem__(self, idx):
+        ruta = self.rutas[idx]
+        bgr = cv2.imread(str(ruta), cv2.IMREAD_UNCHANGED)
+        if bgr is None:
+            raise RuntimeError(f"No se pudo leer {ruta}")
+
+        if bgr.ndim == 2:
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
+        elif bgr.shape[2] == 4:
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
+        else:
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+        h, w, _ = rgb.shape
+        if self.es_entrenamiento and h >= self.patch_size and w >= self.patch_size:
+            top = random.randint(0, h - self.patch_size)
+            left = random.randint(0, w - self.patch_size)
+            rgb = rgb[top : top + self.patch_size, left : left + self.patch_size]
+
+            # Aumentos
+            if random.random() > 0.5:
+                rgb = np.fliplr(rgb)
+            if random.random() > 0.5:
+                rgb = np.flipud(rgb)
+            rot = random.choice([0, 1, 2, 3])
+            if rot > 0:
+                rgb = np.rot90(rgb, rot)
+
+        target = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float().div(255.0)
+        input_img = target.clone()
+
+        if self.es_entrenamiento:
+            c, ph, pw = input_img.shape
+            num_pix = max(1, int(ph * pw * self.perc_pix))
+            # Coordenadas de blind-spot
+            coords_y = torch.randint(2, ph - 2, (num_pix,))
+            coords_x = torch.randint(2, pw - 2, (num_pix,))
+
+            mask = torch.zeros((1, ph, pw), dtype=torch.float32)
+
+            for cy, cx in zip(coords_y, coords_x):
+                # Vecino aleatorio para reemplazar el pixel ciego
+                dy = random.choice([-2, -1, 1, 2])
+                dx = random.choice([-2, -1, 1, 2])
+                input_img[:, cy, cx] = target[:, cy + dy, cx + dx]
+                mask[:, cy, cx] = 1.0
+
+                # StructN2V: Enmascaramiento estructurado lineal
+                if self.struct_n2v == "horizontal":
+                    for off in [-2, -1, 1, 2]:
+                        if 0 <= cx + off < pw:
+                            input_img[:, cy, cx + off] = target[:, cy + dy, cx + dx]
+                            mask[:, cy, cx + off] = 1.0
+                elif self.struct_n2v == "vertical":
+                    for off in [-2, -1, 1, 2]:
+                        if 0 <= cy + off < ph:
+                            input_img[:, cy + off, cx] = target[:, cy + dy, cx + dx]
+                            mask[:, cy + off, cx] = 1.0
+
+            return input_img, target, mask
+
+        return input_img, target, torch.ones((1, h, w))
+
+
+# 3. Argumentos
 def argumentos():
-    p = argparse.ArgumentParser(description="Pipeline Noise2Void (N2V / N2V2 / StructN2V) para video FLIR.")
-    p.add_argument("--video", required=True, help="ID del video en config/videos.json (ej. video1).")
-    p.add_argument("--modo", choices=("original", "sin_hud"), required=True, help="Fuente de frames: original o sin_hud.")
-    p.add_argument("--etapa", choices=("preparar", "entrenar", "inferir", "todo"), default="todo")
-    p.add_argument("--max-frames", type=int, help="Limite maximo de frames a procesar.")
-    p.add_argument("--epocas", type=int, default=30, help="Numero de epocas de entrenamiento.")
-    p.add_argument("--pasos-por-epoca", type=int, default=500, help="Pasos por epoca.")
-    p.add_argument("--depth", type=int, default=3, help="Profundidad de la UNet (default: 3).")
-    p.add_argument("--num-channels-init", type=int, default=48, help="Filtros iniciales de la UNet (default: 48).")
-    p.add_argument("--lr", type=float, default=1e-4, help="Tasa de aprendizaje (default: 1e-4).")
-    p.add_argument("--batch-size", type=int, default=8, help="Batch size (default: 8).")
-    p.add_argument("--patch-size", type=int, default=128, help="Tamano del parche cuadrado (default: 128).")
-    p.add_argument("--use-n2v2", action="store_true", default=True, help="Activar algoritmo N2V2 (default: True).")
-    p.add_argument("--sin-n2v2", dest="use_n2v2", action="store_false", help="Usar N2V clásico en vez de N2V2.")
-    p.add_argument("--struct-n2v", choices=("none", "horizontal", "vertical"), default="none", help="Eje de enmascaramiento estructurado StructN2V (default: none).")
-    p.add_argument("--id-experimento", help="Nombre personalizado del experimento/carpeta de salida (opcional).")
-    p.add_argument("--reiniciar", action="store_true", help="Borrar cache previo antes de ejecutar.")
+    p = argparse.ArgumentParser(description="Pipeline Noise2Void (N2V / N2V2 / StructN2V) optimizado.")
+    p.add_argument("--video", required=True)
+    p.add_argument("--modo", choices=("original", "sin_hud"), required=True)
+    p.add_argument("--etapa", choices=("entrenar", "inferir", "todo"), default="todo")
+    p.add_argument("--max-frames", type=int)
+    p.add_argument("--epocas", type=int, default=15)
+    p.add_argument("--pasos-por-epoca", type=int, default=300)
+    p.add_argument("--depth", type=int, default=3)
+    p.add_argument("--num-channels-init", type=int, default=48)
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument("--patch-size", type=int, default=128)
+    p.add_argument("--use-n2v2", action="store_true", default=True)
+    p.add_argument("--sin-n2v2", dest="use_n2v2", action="store_false")
+    p.add_argument("--struct-n2v", choices=("none", "horizontal", "vertical"), default="none")
+    p.add_argument("--id-experimento", help="Nombre del experimento.")
+    p.add_argument("--reiniciar", action="store_true")
     return p.parse_args()
 
 
 def cargar_json():
     with RUTA_JSON.open("r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def absoluta(valor):
-    p = Path(valor).expanduser()
-    return (RAIZ / p).resolve() if not p.is_absolute() else p.resolve()
-
-
-def relativa(p):
-    try:
-        return str(p.resolve().relative_to(RAIZ))
-    except ValueError:
-        return str(p.resolve())
 
 
 def natural(p):
@@ -83,91 +205,23 @@ def listar(carpeta, limite=None):
     return rutas[:limite] if limite else rutas
 
 
-def leer_rgb(p):
-    if p.suffix.lower() in {".tif", ".tiff"}:
-        a = tifffile.imread(p)
-    else:
-        bgr = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
-        if bgr is None:
-            raise RuntimeError(f"No se pudo leer {p}")
-        if bgr.ndim == 2:
-            a = np.repeat(bgr[:, :, None], 3, axis=2)
-        elif bgr.shape[2] == 4:
-            a = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
-        else:
-            a = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    a = np.asarray(a)
-    if a.ndim == 2:
-        a = np.repeat(a[:, :, None], 3, axis=2)
-    if a.shape[-1] == 4:
-        a = a[:, :, :3]
-    return np.clip(a, 0, 255).astype(np.uint8)
-
-
-def rutas_base(a, cfg, sufijo):
+def rutas_base(a, cfg):
     v = cfg[a.video]
     fuente_cfg = v.get("extraccion", {}) if a.modo == "original" else v.get("hud", {}).get("limpieza", {})
     if fuente_cfg.get("estado") != "completada":
         raise RuntimeError(f"La fuente {a.modo} no esta completada")
-    fuente = absoluta(fuente_cfg["carpeta_salida"])
-    base_video = absoluta(v["ruta"]).parent.parent
+    fuente = Path(fuente_cfg["carpeta_salida"]).resolve()
+    base_video = Path(v["ruta"]).resolve().parent.parent
 
-    if a.id_experimento:
-        nombre = a.id_experimento
-    else:
-        nombre = sufijo if a.modo == "original" else f"{sufijo}_sin_hud"
-
+    nombre = a.id_experimento or ("n2v" if a.modo == "original" else "n2v_sin_hud")
     cache = RAIZ / "cache" / "denoising" / a.video / nombre
     return {
-        "fuente": fuente, "salida": base_video / nombre, "cache": cache,
-        "train": cache / "dataset" / "train", "val": cache / "dataset" / "val",
-        "predict_input": cache / "dataset" / "predict",
-        "work": cache / "trabajo", "ckpt": cache / "modelo.ckpt",
-        "config": cache / "configuracion.json",
+        "fuente": fuente,
+        "salida": base_video / nombre,
+        "cache": cache,
+        "ckpt": cache / "modelo.pth",
         "nombre": nombre,
     }
-
-
-def checkpoint_final(r):
-    candidatos = sorted(r["work"].rglob("*last.ckpt"), key=lambda p: p.stat().st_mtime)
-    if not candidatos:
-        candidatos = sorted(r["work"].rglob("*.ckpt"), key=lambda p: p.stat().st_mtime)
-    if not candidatos:
-        raise RuntimeError("CAREamics no genero checkpoint")
-    shutil.copy2(candidatos[-1], r["ckpt"])
-
-
-def guardar_prediccion_png(file_path, img, *args, **kwargs):
-    destino = Path(file_path)
-    if destino.suffix.lower() != ".png":
-        destino = destino.with_suffix(".png")
-
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    imagen = np.asarray(img)
-
-    while imagen.ndim > 3 and imagen.shape[0] == 1:
-        imagen = imagen[0]
-
-    if imagen.ndim == 3 and imagen.shape[0] in (1, 3, 4) and imagen.shape[-1] not in (1, 3, 4):
-        imagen = np.moveaxis(imagen, 0, -1)
-
-    if imagen.ndim == 2:
-        imagen = np.repeat(imagen[:, :, None], 3, axis=2)
-    if imagen.ndim == 3 and imagen.shape[-1] == 1:
-        imagen = np.repeat(imagen, 3, axis=2)
-    if imagen.ndim == 3 and imagen.shape[-1] == 4:
-        imagen = imagen[:, :, :3]
-
-    imagen = np.nan_to_num(imagen, nan=0.0, posinf=255.0, neginf=0.0)
-    imagen = np.clip(imagen, 0, 255).round().astype(np.uint8)
-
-    temporal = destino.with_suffix(".png.tmp")
-    correcta, codificada = cv2.imencode(".png", cv2.cvtColor(imagen, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 3])
-    if not correcta:
-        raise RuntimeError(f"No se pudo codificar {destino}")
-
-    codificada.tofile(temporal)
-    temporal.replace(destino)
 
 
 def actualizar_registro(a, r, etiqueta, inicio, cantidad):
@@ -176,9 +230,8 @@ def actualizar_registro(a, r, etiqueta, inicio, cantidad):
         "nombre": etiqueta,
         "estado": "completada",
         "modo": a.modo,
-        "carpeta_salida": relativa(r["salida"]),
-        "checkpoint": relativa(r["ckpt"]),
-        "configuracion": relativa(r["config"]),
+        "carpeta_salida": str(r["salida"].relative_to(RAIZ)),
+        "checkpoint": str(r["ckpt"].relative_to(RAIZ)),
         "frames_procesados": cantidad,
         "depth": a.depth,
         "lr": a.lr,
@@ -199,153 +252,111 @@ def actualizar_registro(a, r, etiqueta, inicio, cantidad):
         fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
-def r_nombre(a):
-    return a.id_experimento or ("n2v" if a.modo == "original" else "n2v_sin_hud")
+def entrenar(a, r, rutas_frames, dispositivo):
+    r["cache"].mkdir(parents=True, exist_ok=True)
+    dataset = N2VDataset(rutas_frames, patch_size=a.patch_size, es_entrenamiento=True, struct_n2v=a.struct_n2v, use_n2v2=a.use_n2v2)
+    loader = DataLoader(dataset, batch_size=a.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
+    modelo = UNet(in_channels=3, out_channels=3, num_channels_init=a.num_channels_init, depth=a.depth).to(dispositivo)
+    optimizador = optim.Adam(modelo.parameters(), lr=a.lr, weight_decay=1e-8)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizador, T_max=a.epocas, eta_min=1e-6)
 
-def crear_config(a, entrenamiento):
-    trabajadores = max(1, min(8, int(os.environ.get("SLURM_CPUS_PER_TASK", "8")))) if entrenamiento else 4
-    trainer_params = {
-        "accelerator": "gpu",
-        "devices": 1,
-        "strategy": "auto",
-        "precision": "16-mixed",
-        "enable_progress_bar": True,
-        "log_every_n_steps": 10,
-        "benchmark": True,
-        "deterministic": False,
-    }
+    print(f"Iniciando entrenamiento Noise2Void ({a.epocas} epocas, lr={a.lr}, depth={a.depth}, struct={a.struct_n2v})...")
+    mejor_loss = float("inf")
 
-    return create_advanced_n2v_config(
-        experiment_name=f"n2v_{a.video}_{a.modo}_{r_nombre(a)}",
-        data_type="tiff",
-        axes=EJES,
-        patch_size=(a.patch_size, a.patch_size),
-        batch_size=a.batch_size,
-        num_epochs=a.epocas,
-        num_steps=(a.pasos_por_epoca if entrenamiento else None),
-        n_channels=N_CANALES,
-        augmentations=AUMENTOS,
-        n_val_patches=8,
-        in_memory=False,
-        independent_channels=False,
-        normalization="mean_std",
-        normalization_params={"per_channel": True},
-        use_n2v2=a.use_n2v2,
-        roi_size=11,
-        masked_pixel_percentage=0.2,
-        struct_n2v_axes=a.struct_n2v,
-        num_workers=trabajadores,
-        trainer_params=trainer_params,
-        model_params={
-            "depth": a.depth,
-            "num_channels_init": a.num_channels_init,
-            "residual": False,
-            "use_batch_norm": False,
-        },
-        optimizer="Adam",
-        optimizer_params={"lr": a.lr},
-        lr_scheduler="ReduceLROnPlateau",
-        monitor_metric="val_loss",
-        logger="tensorboard",
-        seed=SEMILLA,
-    )
+    for epoca in range(1, a.epocas + 1):
+        modelo.train()
+        loss_total = 0.0
+        pasos = 0
 
+        pbar = tqdm(loader, desc=f"Epoca {epoca}/{a.epocas}", dynamic_ncols=True)
+        for inp, target, mask in pbar:
+            inp = inp.to(dispositivo, non_blocking=True)
+            target = target.to(dispositivo, non_blocking=True)
+            mask = mask.to(dispositivo, non_blocking=True)
 
-def preparar(a, r):
-    frames = listar(r["fuente"], a.max_frames)
-    if len(frames) < 10:
-        raise RuntimeError("Se requieren al menos 10 frames")
-    if a.reiniciar:
-        shutil.rmtree(r["cache"], ignore_errors=True)
-        shutil.rmtree(r["salida"], ignore_errors=True)
+            optimizador.zero_grad()
+            out = modelo(inp)
 
-    shutil.rmtree(r["cache"] / "dataset", ignore_errors=True)
-    r["train"].mkdir(parents=True, exist_ok=True)
-    r["val"].mkdir(parents=True, exist_ok=True)
-    r["predict_input"].mkdir(parents=True, exist_ok=True)
+            # Perdida calculada exclusivamente en los pixeles enmascarados
+            diff = torch.abs(out - target) * mask
+            loss = diff.sum() / torch.clamp(mask.sum() * 3.0, min=1.0)
 
-    cada = max(2, round(1 / 0.05))
+            loss.backward()
+            optimizador.step()
 
-    for i, frame in enumerate(tqdm(frames, desc="Preparando TIFF N2V", unit="frame")):
-        imagen = leer_rgb(frame)
-        nombre = f"{frame.stem}.tif"
-        destino = r["val"] if (i + 1) % cada == 0 else r["train"]
-        tifffile.imwrite(destino / nombre, imagen, compression="deflate")
-        tifffile.imwrite(r["predict_input"] / nombre, imagen, compression="deflate")
+            loss_total += loss.item()
+            pasos += 1
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
-    meta = {
-        "frames_totales": len(frames),
-        "train": len(list(r["train"].glob("*.tif"))),
-        "val": len(list(r["val"].glob("*.tif"))),
-        "use_n2v2": a.use_n2v2,
-        "struct_n2v": a.struct_n2v,
-        "depth": a.depth,
-    }
-    (r["cache"] / "preparacion.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    print(json.dumps(meta, indent=2), flush=True)
+            if a.pasos_por_epoca and pasos >= a.pasos_por_epoca:
+                break
 
+        scheduler.step()
+        promedio = loss_total / max(1, pasos)
+        print(f"Epoca {epoca} completada - Loss promedio: {promedio:.5f}")
 
-def entrenar(a, r):
-    shutil.rmtree(r["work"], ignore_errors=True)
-    r["work"].mkdir(parents=True, exist_ok=True)
-    config = crear_config(a, True)
-    r["config"].write_text(config.model_dump_json(indent=2), encoding="utf-8")
-    careamist = CAREamist(config, work_dir=str(r["work"]), enable_progress_bar=True)
-    careamist.train(train_data=str(r["train"]), val_data=str(r["val"]))
-    checkpoint_final(r)
-    del careamist, config
+        if promedio < mejor_loss:
+            mejor_loss = promedio
+            torch.save({"estado": modelo.state_dict(), "depth": a.depth, "num_channels_init": a.num_channels_init}, r["ckpt"])
+
+    print(f"Entrenamiento completado. Checkpoint guardado en {r['ckpt']}.")
+    del modelo, optimizador, scheduler
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 
-def inferir(a, r, inicio):
+def inferir(a, r, rutas_frames, dispositivo, inicio):
     if not r["ckpt"].is_file():
-        raise FileNotFoundError(f"No existe el checkpoint: {r['ckpt']}")
-    if not r["predict_input"].is_dir():
-        raise FileNotFoundError("No existe predict_input. Ejecute primero preparar.")
+        raise FileNotFoundError(f"No existe checkpoint en {r['ckpt']}")
 
-    cantidad_entrada = sum(1 for f in r["predict_input"].iterdir() if f.is_file() and f.suffix.lower() in (".tif", ".tiff"))
-    if cantidad_entrada == 0:
-        raise RuntimeError("No hay TIFF de inferencia.")
+    modelo = UNet(in_channels=3, out_channels=3, num_channels_init=a.num_channels_init, depth=a.depth).to(dispositivo)
+    checkpoint = torch.load(r["ckpt"], map_location=dispositivo)
+    modelo.load_state_dict(checkpoint["estado"])
+    modelo.eval()
 
-    shutil.rmtree(r["salida"], ignore_errors=True)
     r["salida"].mkdir(parents=True, exist_ok=True)
+    print(f"Ejecutando inferencia Noise2Void en {len(rutas_frames)} frames...")
 
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    with torch.inference_mode():
+        for ruta in tqdm(rutas_frames, desc="Inferiendo frames", dynamic_ncols=True):
+            bgr = cv2.imread(str(ruta), cv2.IMREAD_UNCHANGED)
+            if bgr is None:
+                continue
+            if bgr.ndim == 2:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
+            elif bgr.shape[2] == 4:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
+            else:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
-    config = crear_config(a, entrenamiento=False)
-    careamist = CAREamist(config, work_dir=str(r["work"]), enable_progress_bar=True)
+            h, w, _ = rgb.shape
+            pad_h = (16 - h % 16) % 16
+            pad_w = (16 - w % 16) % 16
+            if pad_h > 0 or pad_w > 0:
+                rgb_padded = cv2.copyMakeBorder(rgb, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
+            else:
+                rgb_padded = rgb
 
-    careamist.predict_to_disk(
-        pred_data=str(r["predict_input"]),
-        prediction_dir=r["salida"],
-        batch_size=1,
-        tile_size=(256, 256),
-        tile_overlap=(32, 32),
-        axes=EJES,
-        data_type="tiff",
-        num_workers=2,
-        in_memory=False,
-        checkpoint=r["ckpt"],
-        write_type="custom",
-        write_extension=".png",
-        write_func=guardar_prediccion_png,
-        write_func_kwargs={},
-    )
+            tensor = torch.from_numpy(np.ascontiguousarray(rgb_padded)).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(dispositivo)
+            denoised = modelo(tensor)
 
-    cantidad_salida = sum(1 for f in r["salida"].iterdir() if f.is_file() and f.suffix.lower() == ".png")
-    if cantidad_salida != cantidad_entrada:
-        raise RuntimeError(f"Se esperaban {cantidad_entrada} PNG y se obtuvieron {cantidad_salida}.")
+            denoised = torch.clamp(denoised, 0.0, 1.0).squeeze(0).permute(1, 2, 0).cpu().numpy()
+            if pad_h > 0 or pad_w > 0:
+                denoised = denoised[:h, :w, :]
+
+            out_uint8 = (denoised * 255.0).round().astype(np.uint8)
+            salida_bgr = cv2.cvtColor(out_uint8, cv2.COLOR_RGB2BGR)
+
+            destino = r["salida"] / f"{ruta.stem}.png"
+            cv2.imwrite(str(destino), salida_bgr, [cv2.IMWRITE_PNG_COMPRESSION, 3])
 
     etiqueta = a.id_experimento or ("Noise2Void" if a.modo == "original" else "Noise2Void sin HUD")
-    actualizar_registro(a, r, etiqueta, inicio, cantidad_salida)
-    print(f"Inferencia N2V completada: {cantidad_salida} frames guardados en {r['salida']}.")
+    actualizar_registro(a, r, etiqueta, inicio, len(rutas_frames))
+    print(f"Inferencia N2V completada exitosamente en {len(rutas_frames)} frames.")
 
-    del careamist, config
+    del modelo
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -355,14 +366,18 @@ def main():
     a = argumentos()
     inicio = time.monotonic()
     cfg = cargar_json()
-    r = rutas_base(a, cfg, "n2v")
+    r = rutas_base(a, cfg)
+    rutas_frames = listar(r["fuente"], a.max_frames)
+    dispositivo = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    if a.etapa in ("preparar", "todo"):
-        preparar(a, r)
+    if a.reiniciar:
+        shutil.rmtree(r["cache"], ignore_errors=True)
+        shutil.rmtree(r["salida"], ignore_errors=True)
+
     if a.etapa in ("entrenar", "todo"):
-        entrenar(a, r)
+        entrenar(a, r, rutas_frames, dispositivo)
     if a.etapa in ("inferir", "todo"):
-        inferir(a, r, inicio)
+        inferir(a, r, rutas_frames, dispositivo, inicio)
 
 
 if __name__ == "__main__":

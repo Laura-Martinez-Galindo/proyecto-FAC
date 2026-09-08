@@ -370,6 +370,11 @@ def calcular_todas_las_metricas(rutas_frames, carpeta_original=None):
                     if nit_orig > 1e-4:
                         valores_retencion.append(float(nit / nit_orig))
 
+    del metrica_niqe, metrica_brisque, metrica_piqe
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return {
         "niqe": calcular_estadisticas(valores_niqe),
         "brisque": calcular_estadisticas(valores_brisque),
