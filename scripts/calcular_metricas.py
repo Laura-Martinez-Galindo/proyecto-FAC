@@ -178,20 +178,36 @@ def resolver_carpetas(video_id, modelo_id, carpeta_directa, archivo_resumen, con
         modo = "sin_hud"
     else:
         modelos = datos_video.get("modelos", {})
+        
+        # 1. Buscar en modelos (exacto o insensible a mayusculas)
+        match_key = None
         if modelo_id in modelos:
-            datos_modelo = modelos[modelo_id]
-            nombre_modelo = obtener_nombre_modelo(modelo_id, datos_modelo)
-            carpeta_entrada = resolver_ruta(datos_modelo["carpeta_salida"])
-            modo = datos_modelo.get("modo", "desconocido")
+            match_key = modelo_id
         else:
-            carpeta_posible = carpeta_video / modelo_id
-            if carpeta_posible.is_dir():
-                carpeta_entrada = carpeta_posible
-                nombre_modelo = obtener_nombre_modelo(modelo_id)
-                modo = "original" if "sin_hud" not in modelo_id else "sin_hud"
+            for k in modelos:
+                if k.lower() == modelo_id.lower():
+                    match_key = k
+                    break
+        
+        if match_key:
+            datos_modelo = modelos[match_key]
+            nombre_modelo = obtener_nombre_modelo(match_key, datos_modelo)
+            carpeta_entrada = resolver_ruta(datos_modelo["carpeta_salida"])
+            modo = datos_modelo.get("modo", "original" if "sin_hud" not in match_key.lower() else "sin_hud")
+        else:
+            # 2. Buscar carpeta fisica en el disco
+            carpeta_entrada = None
+            for p in carpeta_video.iterdir():
+                if p.is_dir() and p.name.lower() == modelo_id.lower():
+                    carpeta_entrada = p
+                    break
+            
+            if carpeta_entrada is not None:
+                nombre_modelo = modelo_id
+                modo = "original" if "sin_hud" not in modelo_id.lower() else "sin_hud"
             else:
                 disponibles = ", ".join(sorted(modelos)) or "ninguno"
-                raise ValueError(f"El modelo '{modelo_id}' no esta registrado. Disponibles: {disponibles}")
+                raise ValueError(f"El modelo/experimento '{modelo_id}' no se encontro en config/videos.json ni en {carpeta_video}. Disponibles: {disponibles}")
 
     if not carpeta_entrada.is_dir():
         raise FileNotFoundError(f"No se encontro la carpeta de frames: {carpeta_entrada}")

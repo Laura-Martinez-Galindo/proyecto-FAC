@@ -315,8 +315,8 @@ def inferir(a, r, inicio):
     careamist.predict_to_disk(
         pred_data=str(r["predict_input"]),
         prediction_dir=r["salida"],
-        batch_size=1,
-        tile_size=(256, 256),
+        batch_size=4,
+        tile_size=(512, 512),
         tile_overlap=(48, 48),
         axes=EJES,
         data_type="tiff",
