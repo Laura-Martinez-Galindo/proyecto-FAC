@@ -4,8 +4,8 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=20
-#SBATCH --mem=140G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=100G
 #SBATCH --gres=gpu:1
 #SBATCH --time=1-00:00:00
 #SBATCH --output=jobs/logs/grid_search_%j.out
