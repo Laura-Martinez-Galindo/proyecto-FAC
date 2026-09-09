@@ -311,8 +311,24 @@ def crear_metricas_iqa(dispositivo):
     return metrica_niqe, metrica_brisque, metrica_piqe
 
 
-def calcular_todas_las_metricas(rutas_frames, carpeta_original=None):
-    """Calcula la suite completa de metricas sin referencia frame por frame."""
+def procesar_metricas_cpu(args):
+    ruta_frame, ruta_orig = args
+    img_np, _ = cargar_imagen_rgb(ruta_frame)
+    s_ruido = estimar_sigma_ruido(img_np)
+    nit = calcular_nitidez_laplaciana(img_np)
+    ret = None
+    if ruta_orig is not None and ruta_orig.is_file():
+        img_orig_np, _ = cargar_imagen_rgb(ruta_orig)
+        nit_orig = calcular_nitidez_laplaciana(img_orig_np)
+        if nit_orig > 1e-4:
+            ret = float(nit / nit_orig)
+    return s_ruido, nit, ret
+
+
+def calcular_todas_las_metricas(rutas_frames, carpeta_original=None, batch_size=8):
+    """Calcula la suite completa de metricas sin referencia usando batching en GPU y multithreading en CPU."""
+    from concurrent.futures import ThreadPoolExecutor
+
     dispositivo = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     metrica_niqe, metrica_brisque, metrica_piqe = crear_metricas_iqa(dispositivo)
 
@@ -323,53 +339,72 @@ def calcular_todas_las_metricas(rutas_frames, carpeta_original=None):
     valores_nitidez = []
     valores_retencion = []
 
-    tiene_original = carpeta_original is not None and carpeta_original.is_dir()
+    tiene_orig = carpeta_original is not None and carpeta_original.is_dir()
+    n_total = len(rutas_frames)
 
+    # 1. Calculo de metricas CPU en paralelo (16 hilos)
+    tareas_cpu = [
+        (rf, (carpeta_original / rf.name) if tiene_orig else None)
+        for rf in rutas_frames
+    ]
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        resultados_cpu = list(pool.map(procesar_metricas_cpu, tareas_cpu))
+
+    for s, nit, ret in resultados_cpu:
+        valores_sigma.append(s)
+        valores_nitidez.append(nit)
+        if ret is not None:
+            valores_retencion.append(ret)
+
+    # 2. Calculo de metricas GPU por lotes (batch_size=8)
     with torch.inference_mode():
-        for i, ruta_frame in enumerate(tqdm(rutas_frames, desc="Calculando metricas completas", unit="frame", dynamic_ncols=True, mininterval=1.0)):
-            img_np, entrada = cargar_imagen_rgb(ruta_frame)
-            entrada_gpu = entrada.to(dispositivo, non_blocking=True)
+        for i in tqdm(range(0, n_total, batch_size), desc="Calculando metricas IQA en GPU", dynamic_ncols=True):
+            lote_rutas = rutas_frames[i : i + batch_size]
+            tensores_lote = []
+            for rf in lote_rutas:
+                _, entrada = cargar_imagen_rgb(rf)
+                tensores_lote.append(entrada)
+
+            batch_gpu = torch.cat(tensores_lote, dim=0).to(dispositivo, non_blocking=True)
 
             # NIQE
             try:
-                v_niqe = float(metrica_niqe(entrada_gpu).detach().float().cpu().item())
-                if math.isfinite(v_niqe): valores_niqe.append(v_niqe)
+                out_niqe = metrica_niqe(batch_gpu)
+                if out_niqe.ndim == 0:
+                    v = float(out_niqe.item())
+                    if math.isfinite(v): valores_niqe.append(v)
+                else:
+                    for v in out_niqe.cpu().tolist():
+                        if math.isfinite(v): valores_niqe.append(float(v))
             except Exception:
                 pass
 
             # BRISQUE
             try:
-                v_brisque = float(metrica_brisque(entrada_gpu).detach().float().cpu().item())
-                if math.isfinite(v_brisque): valores_brisque.append(v_brisque)
+                out_brisque = metrica_brisque(batch_gpu)
+                if out_brisque.ndim == 0:
+                    v = float(out_brisque.item())
+                    if math.isfinite(v): valores_brisque.append(v)
+                else:
+                    for v in out_brisque.cpu().tolist():
+                        if math.isfinite(v): valores_brisque.append(float(v))
             except Exception:
                 pass
 
             # PIQE
             if metrica_piqe is not None:
                 try:
-                    v_piqe = float(metrica_piqe(entrada_gpu).detach().float().cpu().item())
-                    if math.isfinite(v_piqe): valores_piqe.append(v_piqe)
+                    out_piqe = metrica_piqe(batch_gpu)
+                    if out_piqe.ndim == 0:
+                        v = float(out_piqe.item())
+                        if math.isfinite(v): valores_piqe.append(v)
+                    else:
+                        for v in out_piqe.cpu().tolist():
+                            if math.isfinite(v): valores_piqe.append(float(v))
                 except Exception:
                     pass
 
-            del entrada_gpu
-
-            # Sigma de Ruido Estimado
-            s_ruido = estimar_sigma_ruido(img_np)
-            valores_sigma.append(s_ruido)
-
-            # Nitidez Laplaciana
-            nit = calcular_nitidez_laplaciana(img_np)
-            valores_nitidez.append(nit)
-
-            # Retencion de nitidez frente al original
-            if tiene_original:
-                ruta_orig = carpeta_original / ruta_frame.name
-                if ruta_orig.is_file():
-                    img_orig_np, _ = cargar_imagen_rgb(ruta_orig)
-                    nit_orig = calcular_nitidez_laplaciana(img_orig_np)
-                    if nit_orig > 1e-4:
-                        valores_retencion.append(float(nit / nit_orig))
+            del batch_gpu, tensores_lote
 
     del metrica_niqe, metrica_brisque, metrica_piqe
     gc.collect()

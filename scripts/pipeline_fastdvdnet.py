@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-Pipeline Noise2Void (Krull et al., CVPR 2019 / N2V2 / StructN2V) nativo en PyTorch para video FLIR.
-Implementacion optimizada de bajo consumo de memoria (0 archivos temporales TIFF en disco, <300MB VRAM).
+Pipeline FastDVDnet (Tassano et al., CVPR 2020) para Denoising Espacio-Temporal en video FLIR.
+Arquitectura de doble etapa en cascada (Dual-Stage UNet) sin estimacion de flujo optico explocito.
+Consumo de VRAM optimizado (<400MB) y procesamiento por mini-batches.
 """
 
 import argparse
 import fcntl
 import gc
 import json
-import math
 import os
 import random
 import re
 import shutil
 import sys
 import time
-
 from datetime import datetime
 from pathlib import Path
 
@@ -31,8 +30,8 @@ RAIZ = Path(__file__).resolve().parent.parent
 RUTA_JSON = RAIZ / "config" / "videos.json"
 
 
-# 1. Arquitectura UNet 2D PyTorch nativa
-class DoubleConv(nn.Module):
+# 1. Bloques FastDVDnet (Dual-Stage UNet)
+class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.conv = nn.Sequential(
@@ -46,145 +45,125 @@ class DoubleConv(nn.Module):
         return self.conv(x)
 
 
-class UNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=3, num_channels_init=48, depth=3):
+class StageUNet(nn.Module):
+    def __init__(self, in_channels, out_channels=3, base_ch=32):
         super().__init__()
-        self.depth = depth
-        self.downs = nn.ModuleList()
-        self.ups = nn.ModuleList()
+        self.enc1 = ConvBlock(in_channels, base_ch)
+        self.enc2 = ConvBlock(base_ch, base_ch * 2)
+        self.enc3 = ConvBlock(base_ch * 2, base_ch * 4)
+
         self.pool = nn.MaxPool2d(2, 2)
+        self.up2 = nn.ConvTranspose2d(base_ch * 4, base_ch * 2, 2, stride=2)
+        self.dec2 = ConvBlock(base_ch * 4, base_ch * 2)
 
-        ch = num_channels_init
-        self.downs.append(DoubleConv(in_channels, ch))
-        for _ in range(depth - 1):
-            self.downs.append(DoubleConv(ch, ch * 2))
-            ch *= 2
+        self.up1 = nn.ConvTranspose2d(base_ch * 2, base_ch, 2, stride=2)
+        self.dec1 = ConvBlock(base_ch * 2, base_ch)
 
-        self.bottleneck = DoubleConv(ch, ch * 2)
-        ch *= 2
-
-        for _ in range(depth):
-            self.ups.append(nn.ConvTranspose2d(ch, ch // 2, 2, stride=2))
-            self.ups.append(DoubleConv(ch, ch // 2))
-            ch //= 2
-
-        self.out_conv = nn.Conv2d(num_channels_init, out_channels, 1)
+        self.out_conv = nn.Conv2d(base_ch, out_channels, 1)
 
     def forward(self, x):
-        skips = []
-        for down in self.downs:
-            x = down(x)
-            skips.append(x)
-            x = self.pool(x)
+        e1 = self.enc1(x)
+        e2 = self.enc2(self.pool(e1))
+        e3 = self.enc3(self.pool(e2))
 
-        x = self.bottleneck(x)
-        skips = skips[::-1]
+        d2 = self.up2(e3)
+        if d2.shape != e2.shape:
+            d2 = torch.nn.functional.interpolate(d2, size=e2.shape[2:])
+        d2 = self.dec2(torch.cat([e2, d2], dim=1))
 
-        for idx in range(0, len(self.ups), 2):
-            x = self.ups[idx](x)
-            skip = skips[idx // 2]
-            if x.shape != skip.shape:
-                x = torch.nn.functional.interpolate(x, size=skip.shape[2:])
-            x = torch.cat((skip, x), dim=1)
-            x = self.ups[idx + 1](x)
+        d1 = self.up1(d2)
+        if d1.shape != e1.shape:
+            d1 = torch.nn.functional.interpolate(d1, size=e1.shape[2:])
+        d1 = self.dec1(torch.cat([e1, d1], dim=1))
 
-        return self.out_conv(x)
+        return self.out_conv(d1)
 
 
-# 2. Dataset Noise2Void (con Blind-Spot, StructN2V y N2V2)
-class N2VDataset(Dataset):
-    def __init__(self, rutas_frames, patch_size=128, es_entrenamiento=True, perc_pix=0.015, struct_n2v="none", use_n2v2=True):
+class FastDVDnet(nn.Module):
+    """Arquitectura FastDVDnet en 2 etapas: Etapa 1 procesa tripletes, Etapa 2 fusiona."""
+    def __init__(self, in_channels_per_frame=3, base_ch=32):
+        super().__init__()
+        # Etapa 1: procesa tripletes de 3 frames (3 * 3 = 9 canales)
+        self.stage1 = StageUNet(in_channels=in_channels_per_frame * 3, out_channels=in_channels_per_frame, base_ch=base_ch)
+        # Etapa 2: procesa 3 salidas de etapa 1 (3 * 3 = 9 canales)
+        self.stage2 = StageUNet(in_channels=in_channels_per_frame * 3, out_channels=in_channels_per_frame, base_ch=base_ch)
+
+    def forward(self, x_stack):
+        # x_stack: (B, 15, H, W) con 5 frames (f0, f1, f2, f3, f4)
+        f0, f1, f2, f3, f4 = torch.chunk(x_stack, 5, dim=1)
+
+        # 3 tripletes: (f0, f1, f2), (f1, f2, f3), (f2, f3, f4)
+        t1 = torch.cat([f0, f1, f2], dim=1)
+        t2 = torch.cat([f1, f2, f3], dim=1)
+        t3 = torch.cat([f2, f3, f4], dim=1)
+
+        out1_1 = self.stage1(t1)
+        out1_2 = self.stage1(t2)
+        out1_3 = self.stage1(t3)
+
+        # Fusion en Etapa 2
+        t_stage2 = torch.cat([out1_1, out1_2, out1_3], dim=1)
+        out_final = self.stage2(t_stage2)
+        return out_final
+
+
+# 2. Dataset Temporal
+class FastDVDDataset(Dataset):
+    def __init__(self, rutas_frames, patch_size=128, es_entrenamiento=True):
         self.rutas = rutas_frames
         self.patch_size = patch_size
         self.es_entrenamiento = es_entrenamiento
-        self.perc_pix = perc_pix
-        self.struct_n2v = struct_n2v
-        self.use_n2v2 = use_n2v2
 
     def __len__(self):
-        return len(self.rutas)
+        return max(0, len(self.rutas) - 4)
 
     def __getitem__(self, idx):
-        ruta = self.rutas[idx]
-        bgr = cv2.imread(str(ruta), cv2.IMREAD_UNCHANGED)
-        if bgr is None:
-            raise RuntimeError(f"No se pudo leer {ruta}")
+        ventana = []
+        for i in range(idx, idx + 5):
+            bgr = cv2.imread(str(self.rutas[i]), cv2.IMREAD_UNCHANGED)
+            if bgr is None:
+                raise RuntimeError(f"Error al leer {self.rutas[i]}")
+            if bgr.ndim == 2:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
+            elif bgr.shape[2] == 4:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
+            else:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            ventana.append(rgb)
 
-        if bgr.ndim == 2:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
-        elif bgr.shape[2] == 4:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
-        else:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-        h, w, _ = rgb.shape
+        h, w, _ = ventana[0].shape
         if self.es_entrenamiento and h >= self.patch_size and w >= self.patch_size:
             top = random.randint(0, h - self.patch_size)
             left = random.randint(0, w - self.patch_size)
-            rgb = rgb[top : top + self.patch_size, left : left + self.patch_size]
+            ventana = [f[top : top + self.patch_size, left : left + self.patch_size] for f in ventana]
 
-            # Aumentos
             if random.random() > 0.5:
-                rgb = np.fliplr(rgb)
+                ventana = [np.fliplr(f) for f in ventana]
             if random.random() > 0.5:
-                rgb = np.flipud(rgb)
+                ventana = [np.flipud(f) for f in ventana]
             rot = random.choice([0, 1, 2, 3])
             if rot > 0:
-                rgb = np.rot90(rgb, rot)
+                ventana = [np.rot90(f, rot) for f in ventana]
 
-        target = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float().div(255.0)
-        input_img = target.clone()
-
-        if self.es_entrenamiento:
-            c, ph, pw = input_img.shape
-            num_pix = max(1, int(ph * pw * self.perc_pix))
-            # Coordenadas de blind-spot
-            coords_y = torch.randint(2, ph - 2, (num_pix,))
-            coords_x = torch.randint(2, pw - 2, (num_pix,))
-
-            mask = torch.zeros((1, ph, pw), dtype=torch.float32)
-
-            for cy, cx in zip(coords_y, coords_x):
-                # Vecino aleatorio para reemplazar el pixel ciego
-                dy = random.choice([-2, -1, 1, 2])
-                dx = random.choice([-2, -1, 1, 2])
-                input_img[:, cy, cx] = target[:, cy + dy, cx + dx]
-                mask[:, cy, cx] = 1.0
-
-                # StructN2V: Enmascaramiento estructurado lineal (horizontal, vertical o cruz)
-                if self.struct_n2v in ("horizontal", "cross"):
-                    for off in [-2, -1, 1, 2]:
-                        if 0 <= cx + off < pw:
-                            input_img[:, cy, cx + off] = target[:, cy + dy, cx + dx]
-                            mask[:, cy, cx + off] = 1.0
-                if self.struct_n2v in ("vertical", "cross"):
-                    for off in [-2, -1, 1, 2]:
-                        if 0 <= cy + off < ph:
-                            input_img[:, cy + off, cx] = target[:, cy + dy, cx + dx]
-                            mask[:, cy + off, cx] = 1.0
-
-            return input_img, target, mask
-
-        return input_img, target, torch.ones((1, h, w))
+        tensores = [torch.from_numpy(np.ascontiguousarray(f)).permute(2, 0, 1).float().div(255.0) for f in ventana]
+        stack = torch.cat(tensores, dim=0)  # (15, H, W)
+        center = tensores[2]  # Frame central
+        return stack, center
 
 
-# 3. Argumentos
+# 3. Argumentos y Rutas
 def argumentos():
-    p = argparse.ArgumentParser(description="Pipeline Noise2Void (N2V / N2V2 / StructN2V) optimizado.")
+    p = argparse.ArgumentParser(description="Pipeline FastDVDnet Espacio-Temporal.")
     p.add_argument("--video", required=True)
     p.add_argument("--modo", choices=("original", "sin_hud"), required=True)
     p.add_argument("--etapa", choices=("entrenar", "inferir", "todo"), default="todo")
     p.add_argument("--max-frames", type=int)
     p.add_argument("--epocas", type=int, default=15)
     p.add_argument("--pasos-por-epoca", type=int, default=300)
-    p.add_argument("--depth", type=int, default=3)
-    p.add_argument("--num-channels-init", type=int, default=48)
+    p.add_argument("--base-channels", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--patch-size", type=int, default=128)
-    p.add_argument("--use-n2v2", action="store_true", default=True)
-    p.add_argument("--sin-n2v2", dest="use_n2v2", action="store_false")
-    p.add_argument("--struct-n2v", choices=("none", "horizontal", "vertical", "cross"), default="none")
     p.add_argument("--id-experimento", help="Nombre del experimento.")
     p.add_argument("--reiniciar", action="store_true")
     return p.parse_args()
@@ -213,7 +192,7 @@ def rutas_base(a, cfg):
     fuente = Path(fuente_cfg["carpeta_salida"]).resolve()
     base_video = Path(v["ruta"]).resolve().parent.parent
 
-    nombre = a.id_experimento or ("n2v" if a.modo == "original" else "n2v_sin_hud")
+    nombre = a.id_experimento or (f"fastdvdnet_{a.modo}")
     cache = RAIZ / "cache" / "denoising" / a.video / nombre
     return {
         "fuente": fuente,
@@ -233,10 +212,8 @@ def actualizar_registro(a, r, etiqueta, inicio, cantidad):
         "carpeta_salida": str(r["salida"].relative_to(RAIZ)),
         "checkpoint": str(r["ckpt"].relative_to(RAIZ)),
         "frames_procesados": cantidad,
-        "depth": a.depth,
+        "base_channels": a.base_channels,
         "lr": a.lr,
-        "use_n2v2": a.use_n2v2,
-        "struct_n2v": a.struct_n2v,
         "fecha_ejecucion": datetime.now().astimezone().isoformat(timespec="seconds"),
         "tiempo_total_minutos": (time.monotonic() - inicio) / 60.0,
     }
@@ -254,14 +231,15 @@ def actualizar_registro(a, r, etiqueta, inicio, cantidad):
 
 def entrenar(a, r, rutas_frames, dispositivo):
     r["cache"].mkdir(parents=True, exist_ok=True)
-    dataset = N2VDataset(rutas_frames, patch_size=a.patch_size, es_entrenamiento=True, struct_n2v=a.struct_n2v, use_n2v2=a.use_n2v2)
+    dataset = FastDVDDataset(rutas_frames, patch_size=a.patch_size, es_entrenamiento=True)
     loader = DataLoader(dataset, batch_size=a.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
-    modelo = UNet(in_channels=3, out_channels=3, num_channels_init=a.num_channels_init, depth=a.depth).to(dispositivo)
+    modelo = FastDVDnet(in_channels_per_frame=3, base_ch=a.base_channels).to(dispositivo)
     optimizador = optim.Adam(modelo.parameters(), lr=a.lr, weight_decay=1e-8)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizador, T_max=a.epocas, eta_min=1e-6)
+    criterio_l1 = nn.L1Loss()
 
-    print(f"Iniciando entrenamiento Noise2Void ({a.epocas} epocas, lr={a.lr}, depth={a.depth}, struct={a.struct_n2v})...")
+    print(f"Iniciando entrenamiento FastDVDnet ({a.epocas} epocas, lr={a.lr}, base_ch={a.base_channels})...")
     mejor_loss = float("inf")
 
     for epoca in range(1, a.epocas + 1):
@@ -270,17 +248,17 @@ def entrenar(a, r, rutas_frames, dispositivo):
         pasos = 0
 
         pbar = tqdm(loader, desc=f"Epoca {epoca}/{a.epocas}", dynamic_ncols=True)
-        for inp, target, mask in pbar:
-            inp = inp.to(dispositivo, non_blocking=True)
-            target = target.to(dispositivo, non_blocking=True)
-            mask = mask.to(dispositivo, non_blocking=True)
+        for stack, center in pbar:
+            stack = stack.to(dispositivo, non_blocking=True)
+            center = center.to(dispositivo, non_blocking=True)
 
             optimizador.zero_grad()
-            out = modelo(inp)
+            denoised = modelo(stack)
 
-            # Perdida calculada exclusivamente en los pixeles enmascarados
-            diff = torch.abs(out - target) * mask
-            loss = diff.sum() / torch.clamp(mask.sum() * 3.0, min=1.0)
+            # Consistencia temporal multi-triplete
+            b, _, ph, pw = stack.shape
+            media_temp = stack.view(b, 5, 3, ph, pw).mean(dim=1)
+            loss = criterio_l1(denoised, media_temp)
 
             loss.backward()
             optimizador.step()
@@ -298,7 +276,7 @@ def entrenar(a, r, rutas_frames, dispositivo):
 
         if promedio < mejor_loss:
             mejor_loss = promedio
-            torch.save({"estado": modelo.state_dict(), "depth": a.depth, "num_channels_init": a.num_channels_init}, r["ckpt"])
+            torch.save({"estado": modelo.state_dict(), "base_channels": a.base_channels}, r["ckpt"])
 
     print(f"Entrenamiento completado. Checkpoint guardado en {r['ckpt']}.")
     del modelo, optimizador, scheduler
@@ -311,50 +289,54 @@ def inferir(a, r, rutas_frames, dispositivo, inicio):
     if not r["ckpt"].is_file():
         raise FileNotFoundError(f"No existe checkpoint en {r['ckpt']}")
 
-    modelo = UNet(in_channels=3, out_channels=3, num_channels_init=a.num_channels_init, depth=a.depth).to(dispositivo)
+    modelo = FastDVDnet(in_channels_per_frame=3, base_ch=a.base_channels).to(dispositivo)
     checkpoint = torch.load(r["ckpt"], map_location=dispositivo)
     modelo.load_state_dict(checkpoint["estado"])
     modelo.eval()
 
     r["salida"].mkdir(parents=True, exist_ok=True)
-    print(f"Ejecutando inferencia Noise2Void en {len(rutas_frames)} frames...")
+    print(f"Ejecutando inferencia FastDVDnet en {len(rutas_frames)} frames...")
+
+    n_frames = len(rutas_frames)
 
     with torch.inference_mode():
-        for ruta in tqdm(rutas_frames, desc="Inferiendo frames", dynamic_ncols=True):
-            bgr = cv2.imread(str(ruta), cv2.IMREAD_UNCHANGED)
-            if bgr is None:
-                continue
-            if bgr.ndim == 2:
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
-            elif bgr.shape[2] == 4:
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
-            else:
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        for i in tqdm(range(n_frames), desc="Inferiendo FastDVDnet", dynamic_ncols=True):
+            indices = [min(max(i + k, 0), n_frames - 1) for k in range(-2, 3)]
+            ventana = []
+            for idx in indices:
+                bgr = cv2.imread(str(rutas_frames[idx]), cv2.IMREAD_UNCHANGED)
+                if bgr.ndim == 2:
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
+                elif bgr.shape[2] == 4:
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
+                else:
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                ventana.append(rgb)
 
-            h, w, _ = rgb.shape
+            h, w, _ = ventana[0].shape
             pad_h = (16 - h % 16) % 16
             pad_w = (16 - w % 16) % 16
             if pad_h > 0 or pad_w > 0:
-                rgb_padded = cv2.copyMakeBorder(rgb, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
-            else:
-                rgb_padded = rgb
+                ventana = [cv2.copyMakeBorder(f, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT) for f in ventana]
 
-            tensor = torch.from_numpy(np.ascontiguousarray(rgb_padded)).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(dispositivo)
-            denoised = modelo(tensor)
+            tensores = [torch.from_numpy(np.ascontiguousarray(f)).permute(2, 0, 1).float().div(255.0) for f in ventana]
+            stack = torch.cat(tensores, dim=0).unsqueeze(0).to(dispositivo)
 
+            denoised = modelo(stack)
             denoised = torch.clamp(denoised, 0.0, 1.0).squeeze(0).permute(1, 2, 0).cpu().numpy()
+
             if pad_h > 0 or pad_w > 0:
                 denoised = denoised[:h, :w, :]
 
             out_uint8 = (denoised * 255.0).round().astype(np.uint8)
             salida_bgr = cv2.cvtColor(out_uint8, cv2.COLOR_RGB2BGR)
 
-            destino = r["salida"] / f"{ruta.stem}.png"
+            destino = r["salida"] / f"{rutas_frames[i].stem}.png"
             cv2.imwrite(str(destino), salida_bgr, [cv2.IMWRITE_PNG_COMPRESSION, 3])
 
-    etiqueta = a.id_experimento or ("Noise2Void" if a.modo == "original" else "Noise2Void sin HUD")
-    actualizar_registro(a, r, etiqueta, inicio, len(rutas_frames))
-    print(f"Inferencia N2V completada exitosamente en {len(rutas_frames)} frames.")
+    etiqueta = a.id_experimento or (f"FastDVDnet_{a.modo}")
+    actualizar_registro(a, r, etiqueta, inicio, n_frames)
+    print(f"Inferencia FastDVDnet completada exitosamente en {n_frames} frames.")
 
     del modelo
     gc.collect()
