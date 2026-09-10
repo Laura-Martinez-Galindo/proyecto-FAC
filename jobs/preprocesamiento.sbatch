@@ -4,9 +4,9 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=14
-#SBATCH --mem=48G
-#SBATCH --gres=gpu:nvidia:2
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=24G
+#SBATCH --gres=gpu:1
 #SBATCH --time=1-00:00:00
 #SBATCH --output=jobs/logs/preprocesamiento_%x_%j.out
 #SBATCH --error=jobs/logs/preprocesamiento_%x_%j.err
@@ -319,15 +319,14 @@ echo "Resumen: videos/${VIDEO_ID}/resumen.xlsx"
 echo "============================================================"
 
 # --- Sincronizacion automatica con Google Drive (si rclone esta configurado) ---
-GDRIVE_ID="1RZGdPrUYRHiIQr2UAW7qKP7P7FmH476B"
 if command -v rclone &> /dev/null; then
     if rclone listremotes | grep -q "gdrive"; then
         echo
-        echo "Sincronizando frames de ${VIDEO_ID} con Google Drive (Carpeta ID: ${GDRIVE_ID})..."
-        rclone copy "videos/${VIDEO_ID}/frames_originales" "gdrive:${GDRIVE_ID}/${VIDEO_ID}/frames_originales" --transfers 8 --checkers 16 || true
-        rclone copy "videos/${VIDEO_ID}/mascaras_hud" "gdrive:${GDRIVE_ID}/${VIDEO_ID}/mascaras_hud" --transfers 8 --checkers 16 || true
-        rclone copy "videos/${VIDEO_ID}/frames_sin_hud" "gdrive:${GDRIVE_ID}/${VIDEO_ID}/frames_sin_hud" --transfers 8 --checkers 16 || true
-        rclone copy "videos/${VIDEO_ID}/resumen.xlsx" "gdrive:${GDRIVE_ID}/${VIDEO_ID}/" || true
+        echo "Sincronizando frames de ${VIDEO_ID} con Google Drive (proyecto-FAC/videos/${VIDEO_ID})..."
+        rclone copy "videos/${VIDEO_ID}/frames_originales" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/frames_originales" --transfers 8 --checkers 16 || true
+        rclone copy "videos/${VIDEO_ID}/mascaras_hud" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/mascaras_hud" --transfers 8 --checkers 16 || true
+        rclone copy "videos/${VIDEO_ID}/frames_sin_hud" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/frames_sin_hud" --transfers 8 --checkers 16 || true
+        rclone copy "videos/${VIDEO_ID}/resumen.xlsx" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/" || true
         echo "Sincronizacion con Google Drive completada exitosamente."
     fi
 fi

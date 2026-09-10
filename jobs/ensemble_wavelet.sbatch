@@ -4,9 +4,9 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=14
-#SBATCH --mem=48G
-#SBATCH --gres=gpu:nvidia:2
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=24G
+#SBATCH --gres=gpu:1
 #SBATCH --time=1-00:00:00
 #SBATCH --output=jobs/logs/ensemble_wavelet_%j.out
 #SBATCH --error=jobs/logs/ensemble_wavelet_%j.err
@@ -43,33 +43,58 @@ DIR_UDVD="${DIR_EXPOS}/udvd_${MODO}"
 DIR_B2U="${DIR_EXPOS}/blind2unblind_${MODO}"
 DIR_ENSEMBLE="${DIR_EXPOS}/ensemble_wavelet_udvd_b2u_${MODO}"
 
-# 1. Entrenar e inferir UDVD en GPU 0
-echo
-echo "--- [1/3] Entrenando e Infiriendo UDVD (GPU 0) ---"
-CUDA_VISIBLE_DEVICES=0 "${RUTA_PYTHON}" scripts/pipeline_udvd.py \
-    --video "${VIDEO_ID}" \
-    --modo "${MODO}" \
-    --lr "${LR}" \
-    --epocas "${EPOCAS}" \
-    --pasos-por-epoca 300 \
-    --tamano-lote 4 \
-    --max-frames "${MAX_FRAMES}" \
-    --carpeta-salida "${DIR_UDVD}" \
-    --id-experimento "udvd_${MODO}" &
+NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)
 
-# 2. Entrenar e inferir Blind2Unblind en GPU 1
-echo "--- [2/3] Entrenando e Infiriendo Blind2Unblind (GPU 1) ---"
-CUDA_VISIBLE_DEVICES=1 "${RUTA_PYTHON}" scripts/pipeline_blind2unblind.py \
-    --video "${VIDEO_ID}" \
-    --modo "${MODO}" \
-    --lr "${LR}" \
-    --epocas "${EPOCAS}" \
-    --pasos-por-epoca 300 \
-    --tamano-lote 4 \
-    --max-frames "${MAX_FRAMES}" \
-    --carpeta-salida "${DIR_B2U}" \
-    --id-experimento "blind2unblind_${MODO}" &
-wait
+if [ "$NUM_GPUS" -ge 2 ]; then
+    echo "--- Detectadas ${NUM_GPUS} GPUs: Ejecutando UDVD (GPU 0) y Blind2Unblind (GPU 1) en paralelo ---"
+    CUDA_VISIBLE_DEVICES=0 "${RUTA_PYTHON}" scripts/pipeline_udvd.py \
+        --video "${VIDEO_ID}" \
+        --modo "${MODO}" \
+        --lr "${LR}" \
+        --epocas "${EPOCAS}" \
+        --pasos-por-epoca 300 \
+        --tamano-lote 4 \
+        --max-frames "${MAX_FRAMES}" \
+        --carpeta-salida "${DIR_UDVD}" \
+        --id-experimento "udvd_${MODO}" &
+
+    CUDA_VISIBLE_DEVICES=1 "${RUTA_PYTHON}" scripts/pipeline_blind2unblind.py \
+        --video "${VIDEO_ID}" \
+        --modo "${MODO}" \
+        --lr "${LR}" \
+        --epocas "${EPOCAS}" \
+        --pasos-por-epoca 300 \
+        --tamano-lote 4 \
+        --max-frames "${MAX_FRAMES}" \
+        --carpeta-salida "${DIR_B2U}" \
+        --id-experimento "blind2unblind_${MODO}" &
+    wait
+else
+    echo "--- Detectada 1 GPU: Ejecutando UDVD y Blind2Unblind secuencialmente en GPU 0 ---"
+    echo "--- [1/3] Entrenando e Infiriendo UDVD (GPU 0) ---"
+    "${RUTA_PYTHON}" scripts/pipeline_udvd.py \
+        --video "${VIDEO_ID}" \
+        --modo "${MODO}" \
+        --lr "${LR}" \
+        --epocas "${EPOCAS}" \
+        --pasos-por-epoca 300 \
+        --tamano-lote 4 \
+        --max-frames "${MAX_FRAMES}" \
+        --carpeta-salida "${DIR_UDVD}" \
+        --id-experimento "udvd_${MODO}"
+
+    echo "--- [2/3] Entrenando e Infiriendo Blind2Unblind (GPU 0) ---"
+    "${RUTA_PYTHON}" scripts/pipeline_blind2unblind.py \
+        --video "${VIDEO_ID}" \
+        --modo "${MODO}" \
+        --lr "${LR}" \
+        --epocas "${EPOCAS}" \
+        --pasos-por-epoca 300 \
+        --tamano-lote 4 \
+        --max-frames "${MAX_FRAMES}" \
+        --carpeta-salida "${DIR_B2U}" \
+        --id-experimento "blind2unblind_${MODO}"
+fi
 
 echo "Calculando metricas individuales..."
 "${RUTA_PYTHON}" scripts/calcular_metricas.py \
@@ -118,11 +143,10 @@ echo "Resultados en: videos/${VIDEO_ID}/${EXCEL_EXP}"
 echo "============================================================"
 
 # Sincronizacion automatica con Google Drive si rclone esta configurado
-GDRIVE_ID="1RZGdPrUYRHiIQr2UAW7qKP7P7FmH476B"
 if command -v rclone &> /dev/null; then
     if rclone listremotes | grep -q "gdrive"; then
-        echo "Subiendo resultados a Google Drive..."
-        rclone copy "${DIR_ENSEMBLE}" "gdrive:${GDRIVE_ID}/${VIDEO_ID}/expos/ensemble_wavelet_udvd_b2u_${MODO}" --transfers 8 --checkers 16 || true
-        rclone copy "videos/${VIDEO_ID}/${EXCEL_EXP}" "gdrive:${GDRIVE_ID}/${VIDEO_ID}/" || true
+        echo "Subiendo resultados a Google Drive (proyecto-FAC/videos/${VIDEO_ID})..."
+        rclone copy "${DIR_ENSEMBLE}" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/expos/ensemble_wavelet_udvd_b2u_${MODO}" --transfers 8 --checkers 16 || true
+        rclone copy "videos/${VIDEO_ID}/${EXCEL_EXP}" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/" || true
     fi
 fi

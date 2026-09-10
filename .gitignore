@@ -48,6 +48,8 @@ jobs/slurm-*.out
 jobs/*-log.o*
 jobs/*-err.o*
 
-# Archivos temporales
+# Archivos temporales y ejecutables
 *.tmp
 *.temp
+*.exe
+*.zip
