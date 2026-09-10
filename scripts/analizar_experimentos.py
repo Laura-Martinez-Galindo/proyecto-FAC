@@ -66,18 +66,41 @@ def imprimir_resumen_tesis(registros):
     print("=" * 100)
 
 
-def resolver_carpeta_frame(base_video, subcarpeta, nombre_frame):
-    """Busca un frame en la subcarpeta directa o dentro de expos/."""
-    posibles = [
-        base_video / subcarpeta / nombre_frame,
-        base_video / "expos" / subcarpeta / nombre_frame,
-        RAIZ / subcarpeta / nombre_frame,
-        base_video / subcarpeta / f"{Path(nombre_frame).stem}.jpg",
-        base_video / "expos" / subcarpeta / f"{Path(nombre_frame).stem}.jpg",
+def resolver_carpeta_frame(base_video, subcarpeta, frame_idx):
+    """Busca un frame en la subcarpeta directa o dentro de expos/ tolerando cualquier formato numérico (5, 6 o 4 digitos)."""
+    carpetas_buscar = [
+        base_video / subcarpeta,
+        base_video / "expos" / subcarpeta,
+        RAIZ / subcarpeta,
+        RAIZ / "videos" / base_video.name / "expos" / subcarpeta,
     ]
-    for p in posibles:
-        if p.exists():
-            return p
+
+    posibles_nombres = [
+        f"frame_{frame_idx:05d}.png",
+        f"frame_{frame_idx:05d}.jpg",
+        f"frame_{frame_idx:06d}.png",
+        f"frame_{frame_idx:06d}.jpg",
+        f"frame_{frame_idx:04d}.png",
+        f"frame_{frame_idx:04d}.jpg",
+        f"frame_{frame_idx}.png",
+        f"frame_{frame_idx}.jpg",
+    ]
+
+    import re
+    for c in carpetas_buscar:
+        if not c.is_dir():
+            continue
+        for n in posibles_nombres:
+            p = c / n
+            if p.is_file():
+                return p
+
+        # Busqueda por numero si tiene sufijos o prefijos particulares
+        for p in c.iterdir():
+            if p.is_file() and p.suffix.lower() in [".png", ".jpg", ".jpeg"]:
+                nums = re.findall(r"\d+", p.stem)
+                if nums and int(nums[-1]) == frame_idx:
+                    return p
     return None
 
 
@@ -93,11 +116,10 @@ def generar_mosaico_frame(base, frame_idx, salida_png, modelos_mostrar=None):
             ("Ensemble Wavelet (UDVD+B2U)", "ensemble_wavelet_udvd_b2u_sinhud"),
         ]
 
-    nombre_archivo = f"frame_{frame_idx:06d}.png"
     imgs = []
     
     for titulo, subcarpeta in modelos_mostrar:
-        ruta_img = resolver_carpeta_frame(base, subcarpeta, nombre_archivo)
+        ruta_img = resolver_carpeta_frame(base, subcarpeta, frame_idx)
         if ruta_img:
             img = cv2.imread(str(ruta_img))
             imgs.append((titulo, img))
