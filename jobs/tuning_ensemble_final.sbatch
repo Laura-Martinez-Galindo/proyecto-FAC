@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-#SBATCH --job-name=tuning_campeones
+#SBATCH --job-name=tuning_ensemble_final
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -8,8 +8,8 @@
 #SBATCH --mem=140G
 #SBATCH --gres=gpu:2
 #SBATCH --time=03:00:00
-#SBATCH --output=jobs/logs/tuning_campeones_%j.out
-#SBATCH --error=jobs/logs/tuning_campeones_%j.err
+#SBATCH --output=jobs/logs/tuning_ensemble_final_%j.out
+#SBATCH --error=jobs/logs/tuning_ensemble_final_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=lf.martinezg1@uniandes.edu.co
 
@@ -30,22 +30,21 @@ cd "${RUTA_PROYECTO}"
 mkdir -p jobs/logs "videos/${VIDEO_ID}/expos"
 
 echo "============================================================"
-echo "TUNING FINAL DE CAMPEONES Y ENSAMBLES (2 GPUs, 140GB RAM)"
+echo "TUNING DEFINITIVO DEL ENSAMBLE CAMPEÓN (2 GPUs, 140GB RAM)"
 echo "Video: ${VIDEO_ID} | Frames: ${MAX_FRAMES}"
 echo "Épocas: ${EPOCAS} | Pasos por época: ${PASOS}"
 echo "Tasas de Aprendizaje: 3e-4 (menor), 1e-3 (base), 3e-3 (mayor)"
-echo "Destino: videos/${VIDEO_ID}/expos/"
 echo "Nodo: ${SLURMD_NODENAME:-local} | GPUs: ${CUDA_VISIBLE_DEVICES:-0,1}"
 echo "Inicio: $(date --iso-8601=seconds)"
 echo "============================================================"
 
 # ------------------------------------------------------------
-# 1. ENTRENAMIENTOS EN PARALELO EN LAS 2 GPUS
+# 1. ENTRENAMIENTO DE MODELOS INDIVIDUALES A 40 ÉPOCAS (2 GPUs)
 # ------------------------------------------------------------
 
 # Par 1: UDVD lr=3e-4 (GPU 0) y UDVD lr=3e-3 (GPU 1)
 echo
-echo "--- [1/3] Entrenando UDVD con lr=3e-4 (GPU 0) y lr=3e-3 (GPU 1) ---"
+echo "--- [1/3] Entrenando UDVD con lr=3e-4 (GPU 0) y lr=3e-3 (GPU 1) a 40 epocas ---"
 CUDA_VISIBLE_DEVICES=0 "${RUTA_PYTHON}" scripts/pipeline_udvd.py \
     --video "${VIDEO_ID}" \
     --modo sin_hud \
@@ -75,7 +74,7 @@ wait "${PID_2}"
 
 # Par 2: UDVD lr=1e-3 (GPU 0) y StructN2V Vertical lr=1e-3 (GPU 1)
 echo
-echo "--- [2/3] Entrenando UDVD lr=1e-3 (GPU 0) y StructN2V Vertical (GPU 1) ---"
+echo "--- [2/3] Entrenando UDVD lr=1e-3 (GPU 0) y StructN2V Vertical lr=1e-3 (GPU 1) ---"
 CUDA_VISIBLE_DEVICES=0 "${RUTA_PYTHON}" scripts/pipeline_udvd.py \
     --video "${VIDEO_ID}" \
     --modo sin_hud \
@@ -133,12 +132,12 @@ wait "${PID_5}"
 wait "${PID_6}"
 
 # ------------------------------------------------------------
-# 2. GENERACIÓN DE ENSAMBLES DEFINITIVOS
+# 2. GENERACIÓN DE LOS ENSAMBLES DEFINITIVOS (NOMENCLATURA EXACTA)
 # ------------------------------------------------------------
 echo
-echo "--- Generando Ensambles Wavelet Dual, Triple y Ponderado ---"
+echo "--- Generando Ensambles Definitivos ---"
 
-# Ensamble Wavelet A: UDVD (Base Temporal) + Blind2Unblind (Detalle)
+# Ensamble Wavelet Campeón A: UDVD (Base Temporal) + Blind2Unblind (Detalle)
 "${RUTA_PYTHON}" scripts/pipeline_ensemble.py \
     --video "${VIDEO_ID}" \
     --modo sin_hud \
@@ -147,7 +146,7 @@ echo "--- Generando Ensambles Wavelet Dual, Triple y Ponderado ---"
     --max-frames "${MAX_FRAMES}" \
     --id-experimento "expos/ensemble_wavelet_udvd_b2u_sinhud"
 
-# Ensamble Wavelet B: UDVD (Base Temporal) + StructN2V Vertical (Desrayado)
+# Ensamble Wavelet Campeón B: UDVD (Base Temporal) + StructN2V Vertical (Desrayado)
 "${RUTA_PYTHON}" scripts/pipeline_ensemble.py \
     --video "${VIDEO_ID}" \
     --modo sin_hud \
@@ -156,16 +155,16 @@ echo "--- Generando Ensambles Wavelet Dual, Triple y Ponderado ---"
     --max-frames "${MAX_FRAMES}" \
     --id-experimento "expos/ensemble_wavelet_udvd_struct_vert_sinhud"
 
-# Ensamble Wavelet C: TRIPLE FUSIÓN (Base UDVD + Desrayado StructN2V + Textura B2U)
+# Ensamble Wavelet Triple: UDVD + StructN2V Vert + Blind2Unblind
 "${RUTA_PYTHON}" scripts/pipeline_ensemble.py \
     --video "${VIDEO_ID}" \
     --modo sin_hud \
     --metodo-fusion wavelet \
     --modelos-entrada "videos/${VIDEO_ID}/expos/udvd_sinhud_lr1e3_ep40" "videos/${VIDEO_ID}/expos/struct_n2v_vert_sinhud_lr1e3_ep40" "videos/${VIDEO_ID}/expos/blind2unblind_sinhud_lr1e3_ep40" \
     --max-frames "${MAX_FRAMES}" \
-    --id-experimento "expos/ensemble_wavelet_triple_sinhud"
+    --id-experimento "expos/ensemble_wavelet_udvd_struct_vert_b2u_sinhud"
 
-# Ensamble Promedio Ponderado Top-3
+# Ensamble Ponderado: UDVD + StructN2V Vert + Blind2Unblind
 "${RUTA_PYTHON}" scripts/pipeline_ensemble.py \
     --video "${VIDEO_ID}" \
     --modo sin_hud \
@@ -173,13 +172,13 @@ echo "--- Generando Ensambles Wavelet Dual, Triple y Ponderado ---"
     --modelos-entrada "videos/${VIDEO_ID}/expos/udvd_sinhud_lr1e3_ep40" "videos/${VIDEO_ID}/expos/struct_n2v_vert_sinhud_lr1e3_ep40" "videos/${VIDEO_ID}/expos/blind2unblind_sinhud_lr1e3_ep40" \
     --pesos 0.45 0.35 0.20 \
     --max-frames "${MAX_FRAMES}" \
-    --id-experimento "expos/ensemble_ponderado_top3_sinhud"
+    --id-experimento "expos/ensemble_ponderado_udvd_struct_vert_b2u_sinhud"
 
 # ------------------------------------------------------------
-# 3. CÁLCULO DE MÉTRICAS COMPLETAS Y REPORTE
+# 3. CÁLCULO DE MÉTRICAS EN GPU
 # ------------------------------------------------------------
 echo
-echo "--- Calculando métricas en GPU y actualizando Excel ---"
+echo "--- Calculando métricas de todos los modelos afinados ---"
 
 MODELOS_EVAL=(
     "udvd_sinhud_lr3e4_ep40"
@@ -190,8 +189,8 @@ MODELOS_EVAL=(
     "blind2unblind_sinhud_lr3e4_ep40"
     "ensemble_wavelet_udvd_b2u_sinhud"
     "ensemble_wavelet_udvd_struct_vert_sinhud"
-    "ensemble_wavelet_triple_sinhud"
-    "ensemble_ponderado_top3_sinhud"
+    "ensemble_wavelet_udvd_struct_vert_b2u_sinhud"
+    "ensemble_ponderado_udvd_struct_vert_b2u_sinhud"
 )
 
 for EXP_NAME in "${MODELOS_EVAL[@]}"; do
@@ -205,11 +204,11 @@ for EXP_NAME in "${MODELOS_EVAL[@]}"; do
         --parametros-extra "Epocas=${EPOCAS}, Pasos=${PASOS}, Modo=sinhud"
 done
 
-# Generar reporte final y mosaico visual
+# Generar reporte y mosaico comparativo
 "${RUTA_PYTHON}" scripts/analizar_experimentos.py --video "${VIDEO_ID}" --excel "${EXCEL_EXP}" --mosaico "mosaico_comparativo_final.png"
 
 echo
 echo "============================================================"
-echo "PROCESO FINAL DE TUNING COMPLETADO EXITOSAMENTE"
+echo "TUNING DEFINITIVO DEL ENSAMBLE COMPLETADO CON ÉXITO"
 echo "Fin: $(date --iso-8601=seconds)"
 echo "============================================================"
