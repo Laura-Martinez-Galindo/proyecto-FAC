@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=180G
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:nvidia:2
 #SBATCH --time=1-00:00:00
 #SBATCH --output=jobs/logs/preprocesamiento_%x_%j.out
