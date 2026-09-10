@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=140G
+#SBATCH --mem=48G
 #SBATCH --gres=gpu:2
 #SBATCH --time=03:00:00
 #SBATCH --output=jobs/logs/tuning_ensemble_final_%j.out
