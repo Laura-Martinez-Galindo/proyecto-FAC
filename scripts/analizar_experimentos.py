@@ -4,7 +4,7 @@ Analiza todos los experimentos de denoising (Fase 1 y Fase 2):
 1. Lee la tabla depurada de resumen_experimentos.xlsx.
 2. Imprime el ranking consolidado y estadisticas para la redaccion de la tesis.
 3. Genera mosaicos visuales comparativos de alta definicion (mineria ilegal, rios y selva)
-   con las carpetas organizadas dentro de videos/video1/expos/.
+   para multiples frames clave (ej. 100, 500, 800) y los guarda en figuras_tesis/.
 """
 
 import argparse
@@ -53,14 +53,15 @@ def imprimir_resumen_tesis(registros):
     print(f"{'No.':<3} | {'ID Experimento':<38} | {'Modo':<7} | {'LR':<6} | {'BRISQUE':<8} | {'NIQE':<6} | {'PIQE':<6} | {'Sigma':<6} | {'Nitidez (%)':<10}")
     print("-" * 100)
     for idx, r in enumerate(ordenados, 1):
-        exp = str(r.get("ID Experimento", "-"))[:38]
+        exp = str(r.get("ID Experimento", r.get("Experimento", "-")))[:38]
         modo = str(r.get("Modo", "-"))[:7]
-        lr = str(r.get("Tasa Aprendizaje (LR)", "-"))[:6]
-        b = f"{float(r['BRISQUE media']):.2f}" if r.get("BRISQUE media") is not None else "-"
-        n = f"{float(r['NIQE media']):.2f}" if r.get("NIQE media") is not None else "-"
-        p = f"{float(r['PIQE media']):.2f}" if r.get("PIQE media") is not None else "-"
-        s = f"{float(r['Sigma Ruido media']):.3f}" if r.get("Sigma Ruido media") is not None else "-"
-        ret = f"{float(r['Retención Nitidez (%)']):.1f}%" if r.get("Retención Nitidez (%)") is not None else "-"
+        lr = str(r.get("Tasa Aprendizaje (LR)", r.get("Learning Rate", "-")))[:6]
+        b = f"{float(r['BRISQUE']):.2f}" if r.get("BRISQUE") is not None else (f"{float(r['BRISQUE media']):.2f}" if r.get("BRISQUE media") is not None else "-")
+        n = f"{float(r['NIQE']):.2f}" if r.get("NIQE") is not None else (f"{float(r['NIQE media']):.2f}" if r.get("NIQE media") is not None else "-")
+        p = f"{float(r['PIQE']):.2f}" if r.get("PIQE") is not None else (f"{float(r['PIQE media']):.2f}" if r.get("PIQE media") is not None else "-")
+        s = f"{float(r['Sigma Ruido']):.3f}" if r.get("Sigma Ruido") is not None else (f"{float(r['Sigma Ruido media']):.3f}" if r.get("Sigma Ruido media") is not None else "-")
+        ret_val = r.get("Retención Nitidez (%)", r.get("Retencion Nitidez media"))
+        ret = f"{float(ret_val)*100:.1f}%" if ret_val is not None and float(ret_val) <= 2.0 else (f"{float(ret_val):.1f}%" if ret_val is not None else "-")
         print(f"{idx:<3} | {exp:<38} | {modo:<7} | {lr:<6} | {b:<8} | {n:<6} | {p:<6} | {s:<6} | {ret:<10}")
     print("=" * 100)
 
@@ -71,49 +72,47 @@ def resolver_carpeta_frame(base_video, subcarpeta, nombre_frame):
         base_video / subcarpeta / nombre_frame,
         base_video / "expos" / subcarpeta / nombre_frame,
         RAIZ / subcarpeta / nombre_frame,
+        base_video / subcarpeta / f"{Path(nombre_frame).stem}.jpg",
+        base_video / "expos" / subcarpeta / f"{Path(nombre_frame).stem}.jpg",
     ]
     for p in posibles:
         if p.exists():
             return p
-        p_jpg = p.with_suffix(".jpg")
-        if p_jpg.exists():
-            return p_jpg
     return None
 
 
-def generar_mosaico_cualitativo(video_id, frame_idx=500, salida_png="mosaico_comparativo.png"):
-    """Genera mosaico visual comparando los modelos clave con recuadro zoom."""
-    base = RAIZ / "videos" / video_id
-    
-    lista_modelos = [
-        ("1. Original Crudo", "frames_originales"),
-        ("2. Base Sin HUD", "frames_sin_hud"),
-        ("3. Bilateral Temporal", "bilateral_temporal_sinhud"),
-        ("4. StructN2V Vertical", "struct_n2v_vert_sinhud"),
-        ("5. UDVD (Dynamic Kernels)", "udvd_sinhud"),
-        ("6. Ensamble Wavelet (UDVD+B2U)", "ensemble_wavelet_udvd_b2u_sinhud"),
-    ]
-    
+def generar_mosaico_frame(base, frame_idx, salida_png, modelos_mostrar=None):
+    """Genera mosaico visual comparando los modelos clave para un frame especifico."""
+    if modelos_mostrar is None:
+        modelos_mostrar = [
+            ("Original (Con HUD)", "frames_originales"),
+            ("Base Sin HUD (Inpainted)", "frames_sin_hud"),
+            ("Bilateral 3D (Tradicional)", "bilateral_temporal_sinhud"),
+            ("StructN2V Vertical (FPN Free)", "struct_n2v_vert_sinhud"),
+            ("UDVD (Dynamic Kernels)", "udvd_sinhud"),
+            ("Ensemble Wavelet (UDVD+B2U)", "ensemble_wavelet_udvd_b2u_sinhud"),
+        ]
+
     nombre_archivo = f"frame_{frame_idx:06d}.png"
     imgs = []
     
-    for titulo, subcarpeta in lista_modelos:
+    for titulo, subcarpeta in modelos_mostrar:
         ruta_img = resolver_carpeta_frame(base, subcarpeta, nombre_archivo)
         if ruta_img:
             img = cv2.imread(str(ruta_img))
             imgs.append((titulo, img))
         else:
-            print(f"Aviso: no se encontro imagen para {titulo} ({subcarpeta})")
+            print(f"Aviso: no se encontro frame {frame_idx} para {titulo} en {subcarpeta}")
 
     if len(imgs) < 2:
-        print("No hay suficientes imagenes para generar el mosaico.")
-        return
+        print(f"No hay suficientes imagenes para generar el mosaico del frame {frame_idx}.")
+        return False
 
     h, w, _ = imgs[0][1].shape
     
-    # Coordenadas de zoom centrado en la zona de mineria/rio
-    ymin, ymax = int(h * 0.40), int(h * 0.70)
-    xmin, xmax = int(w * 0.40), int(w * 0.70)
+    # Coordenadas de zoom centrado en la zona de mineria/rio/orilla
+    ymin, ymax = int(h * 0.38), int(h * 0.68)
+    xmin, xmax = int(w * 0.38), int(w * 0.68)
     
     paneles = []
     for titulo, img in imgs:
@@ -142,19 +141,29 @@ def generar_mosaico_cualitativo(video_id, frame_idx=500, salida_png="mosaico_com
         mosaico = np.hstack(paneles)
 
     ruta_salida = Path(salida_png)
+    ruta_salida.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(ruta_salida), mosaico)
-    print(f"Mosaico visual cualitativo guardado en: {ruta_salida.resolve()}")
+    print(f"Mosaico frame {frame_idx} guardado en: {ruta_salida.resolve()}")
+    return True
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analisis y consolidacion de experimentos")
+    parser = argparse.ArgumentParser(description="Analisis y generacion de figuras para la tesis")
     parser.add_argument("--video", default="video1")
     parser.add_argument("--excel", default="resumen_experimentos.xlsx")
-    parser.add_argument("--frame", type=int, default=500)
-    parser.add_argument("--mosaico", default="mosaico_comparativo.png")
+    parser.add_argument("--frames", nargs="+", type=int, default=[100, 500, 800], help="Frames clave a renderizar")
+    parser.add_argument("--carpeta-figuras", default="figuras_tesis", help="Carpeta de salida para figuras de tesis")
     args = parser.parse_args()
 
-    ruta_excel = RAIZ / "videos" / args.video / args.excel if not Path(args.excel).is_file() else Path(args.excel)
+    base = RAIZ / "videos" / args.video
+    ruta_excel = base / args.excel if not Path(args.excel).is_file() else Path(args.excel)
     registros = leer_experimentos_excel(ruta_excel)
-    imprimir_resumen_tesis(registros)
-    generar_mosaico_cualitativo(args.video, args.frame, args.mosaico)
+    if registros:
+        imprimir_resumen_tesis(registros)
+
+    dir_figuras = RAIZ / args.carpeta_figuras
+    dir_figuras.mkdir(parents=True, exist_ok=True)
+
+    for f_idx in args.frames:
+        out_png = dir_figuras / f"mosaico_comparativo_f{f_idx}.png"
+        generar_mosaico_frame(base, f_idx, out_png)
