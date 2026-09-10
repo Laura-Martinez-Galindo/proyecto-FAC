@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 Modulo de Ensamble y Fusion de Modelos de Denoising para video FLIR.
-Combina predicciones de modelos espaciales (Blind2Unblind/StructN2V) y temporales (Frames2Residual/FastDVDnet)
+Combina predicciones de modelos espaciales (Blind2Unblind/StructN2V) y temporales (UDVD/FastDVDnet)
 mediante:
-1. Fusion Wavelet Multi-escala (bajas frecuencias termicas temporales + altas frecuencias espaciales).
+1. Fusion Wavelet Multi-escala (Base temporal de baja frecuencia + Detalles de alta frecuencia espacial).
+   - Soporta fusion dual (UDVD + B2U o UDVD + StructN2V)
+   - Soporta fusion triple (UDVD + StructN2V Vert + Blind2Unblind)
 2. Promedio Adaptativo Ponderado.
 3. Mediana Robusta Anti-outliers.
 """
@@ -55,24 +57,29 @@ def listar(carpeta, limite=None):
     return rutas[:limite] if limite else rutas
 
 
-def fusion_wavelet_2d(img_temporal, img_espacial):
+def fusion_wavelet_multiescala(imgs):
     """
-    Fusion en dominio frecuencial:
-    - Bajas frecuencias (Luminancia y gradiente termico estable): provienen del modelo temporal.
-    - Altas frecuencias (Bordes finos, copas de arboles, senderos): provienen del modelo espacial.
+    Fusion en dominio frecuencial multi-escala:
+    - imgs[0] (Base Temporal UDVD): Aporta la luminancia y bajas frecuencias térmicas estables.
+    - imgs[1..N] (Espaciales StructN2V / B2U): Aportan los detalles de alta frecuencia (bordes y texturas).
     """
-    f_t = img_temporal.astype(np.float32)
-    f_s = img_espacial.astype(np.float32)
+    if len(imgs) == 1:
+        return imgs[0]
 
-    # Filtro Gaussiano como aproximacion multi-escala separable
-    blur_t = cv2.GaussianBlur(f_t, (7, 7), 1.5)
-    blur_s = cv2.GaussianBlur(f_s, (7, 7), 1.5)
+    f_base = imgs[0].astype(np.float32)
+    blur_base = cv2.GaussianBlur(f_base, (7, 7), 1.5)
 
-    # Detalle de alta frecuencia espacial: S - blur(S)
-    detalle_espacial = f_s - blur_s
+    detalles = []
+    for i in range(1, len(imgs)):
+        f_esp = imgs[i].astype(np.float32)
+        blur_esp = cv2.GaussianBlur(f_esp, (7, 7), 1.5)
+        detalles.append(f_esp - blur_esp)
 
-    # Fusion: Base temporal suave + Detalles nítidos espaciales
-    fusion = blur_t + detalle_espacial
+    # Promediar los detalles espaciales de alta frecuencia
+    detalle_combinado = np.mean(detalles, axis=0)
+
+    # Fusion: Base temporal suave + Detalles espaciales combinados
+    fusion = blur_base + detalle_combinado
     return np.clip(fusion, 0.0, 255.0).round().astype(np.uint8)
 
 
@@ -133,13 +140,12 @@ def main():
         nombre_frame = listas_frames[0][i].name
         imgs = [cv2.imread(str(listas_frames[m][i]), cv2.IMREAD_COLOR) for m in range(len(carpetas_entrada))]
 
-        if a.metodo_fusion == "wavelet" and len(imgs) >= 2:
-            # imgs[0]: Temporal (ej. Frames2Residual), imgs[1]: Espacial (ej. StructN2V / Blind2Unblind)
-            out_img = fusion_wavelet_2d(imgs[0], imgs[1])
+        if a.metodo_fusion == "wavelet":
+            out_img = fusion_wavelet_multiescala(imgs)
         elif a.metodo_fusion == "mediana":
             stack = np.stack(imgs, axis=0)
             out_img = np.median(stack, axis=0).round().astype(np.uint8)
-        else:  # Promedio
+        else:  # Promedio ponderado
             pesos = a.pesos or [1.0 / len(imgs)] * len(imgs)
             norm_pesos = [p / sum(pesos) for p in pesos]
             stack = sum(img.astype(np.float32) * w for img, w in zip(imgs, norm_pesos))
