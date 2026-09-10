@@ -1,9 +1,0 @@
-
-1. Consultar recursos:
-sinfo -p gpu -N -o "%N | ESTADO=%T | CPU=%c | CPU(A/I/O/T)=%C | MEMORIA_MB=%m | GPU=%G"
-
-2. Trabajos actuales:
-squeue -p gpu -o "%.18i %.12P %.24j %.12u %.2t %.10M %.4D %R"
-
-3. Monitorear:
-tail -n 50 -F "jobs/logs/prueba_n2n_n2v_${JOB_PRUEBA}.out" "jobs/logs/prueba_n2n_n2v_${JOB_PRUEBA}.err"
