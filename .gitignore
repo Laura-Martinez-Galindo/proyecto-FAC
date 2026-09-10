@@ -10,7 +10,9 @@
 *.tiff
 *.bmp
 
-# Permitir explícitamente reportes, métricas y archivos de configuración
+# Permitir explícitamente figuras de tesis, reportes, métricas y archivos de configuración
+!figuras_tesis/
+!figuras_tesis/**
 !videos/**/resumen.xlsx
 !videos/**/*.xlsx
 !videos/**/*.csv

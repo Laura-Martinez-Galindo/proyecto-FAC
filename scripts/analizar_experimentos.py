@@ -132,6 +132,17 @@ def resolver_carpeta_frame(base_video, subcarpeta, frame_idx):
     return None
 
 
+# Mapeo de coordenadas de zoom especificas para encuadrar estructuras antropogenicas reales
+ZOOM_COORDS = {
+    560: (0.28, 0.65, 0.45, 0.72),  # Campamento minero y techos de zinc en la playa del rio
+    600: (0.25, 0.65, 0.35, 0.65),  # Detalle cercano de techos metalicos y linde con la selva
+    650: (0.30, 0.70, 0.45, 0.75),  # Edificacion principal y area desmontada de tierra
+    700: (0.45, 0.80, 0.50, 0.85),  # Orilla del rio y playon de maquinaria aluvial
+    100: (0.35, 0.65, 0.35, 0.65),  # Panoramica fluvial
+    500: (0.38, 0.68, 0.38, 0.68),  # Playones y canal
+}
+
+
 def generar_mosaico_frame(base, frame_idx, salida_png, modelos_mostrar=None):
     """Genera mosaico visual comparando los modelos clave para un frame especifico."""
     if modelos_mostrar is None:
@@ -164,9 +175,14 @@ def generar_mosaico_frame(base, frame_idx, salida_png, modelos_mostrar=None):
     # frames_originales es 1920x1080; frames_sin_hud y modelos de expos son 960x540
     target_w, target_h = 960, 540
 
-    # Coordenadas de zoom centrado en la zona de mineria/rio/orilla
-    ymin, ymax = int(target_h * 0.38), int(target_h * 0.68)
-    xmin, xmax = int(target_w * 0.38), int(target_w * 0.68)
+    # Coordenadas de zoom adaptativo centrado en la estructura real
+    if frame_idx in ZOOM_COORDS:
+        y_min_f, y_max_f, x_min_f, x_max_f = ZOOM_COORDS[frame_idx]
+    else:
+        y_min_f, y_max_f, x_min_f, x_max_f = 0.38, 0.68, 0.38, 0.68
+
+    ymin, ymax = int(target_h * y_min_f), int(target_h * y_max_f)
+    xmin, xmax = int(target_w * x_min_f), int(target_w * x_max_f)
 
     paneles = []
     for titulo, raw_img in imgs:
@@ -222,7 +238,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analisis y generacion de figuras para la tesis")
     parser.add_argument("--video", default="video1")
     parser.add_argument("--excel", default="resumen_experimentos.xlsx")
-    parser.add_argument("--frames", nargs="+", type=int, default=[100, 500, 800], help="Frames clave a renderizar")
+    parser.add_argument("--frames", nargs="+", type=int, default=[560, 600, 650], help="Frames clave a renderizar (ej. 560 campamento, 600 techos, 650 edificaciones)")
     parser.add_argument("--carpeta-figuras", default="figuras_tesis", help="Carpeta de salida para figuras de tesis")
     args = parser.parse_args()
 
