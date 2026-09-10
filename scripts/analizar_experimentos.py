@@ -39,29 +39,57 @@ def leer_experimentos_excel(ruta_excel):
     return experimentos
 
 
+def obtener_campo(r, *claves, default=None):
+    for k in claves:
+        if k in r and r[k] is not None and str(r[k]).strip() != "":
+            return r[k]
+    return default
+
+
 def imprimir_resumen_tesis(registros):
     """Imprime resumen consolidado ordenado por BRISQUE para la redaccion del documento."""
     print("=" * 100)
     print("RESUMEN GLOBAL DE EXPERIMENTOS DEPOSICIÓN / COMPARATIVA TESIS")
     print("=" * 100)
-    
-    ordenados = sorted(
-        [r for r in registros if r.get("BRISQUE media") is not None],
-        key=lambda x: float(x.get("BRISQUE media", 999.0))
-    )
-    
+
+    ordenados = []
+    for r in registros:
+        b_val = obtener_campo(r, "BRISQUE", "BRISQUE media")
+        if b_val is not None:
+            try:
+                ordenados.append((float(b_val), r))
+            except (ValueError, TypeError):
+                continue
+
+    ordenados.sort(key=lambda x: x[0])
+
     print(f"{'No.':<3} | {'ID Experimento':<38} | {'Modo':<7} | {'LR':<6} | {'BRISQUE':<8} | {'NIQE':<6} | {'PIQE':<6} | {'Sigma':<6} | {'Nitidez (%)':<10}")
     print("-" * 100)
-    for idx, r in enumerate(ordenados, 1):
-        exp = str(r.get("ID Experimento", r.get("Experimento", "-")))[:38]
-        modo = str(r.get("Modo", "-"))[:7]
-        lr = str(r.get("Tasa Aprendizaje (LR)", r.get("Learning Rate", "-")))[:6]
-        b = f"{float(r['BRISQUE']):.2f}" if r.get("BRISQUE") is not None else (f"{float(r['BRISQUE media']):.2f}" if r.get("BRISQUE media") is not None else "-")
-        n = f"{float(r['NIQE']):.2f}" if r.get("NIQE") is not None else (f"{float(r['NIQE media']):.2f}" if r.get("NIQE media") is not None else "-")
-        p = f"{float(r['PIQE']):.2f}" if r.get("PIQE") is not None else (f"{float(r['PIQE media']):.2f}" if r.get("PIQE media") is not None else "-")
-        s = f"{float(r['Sigma Ruido']):.3f}" if r.get("Sigma Ruido") is not None else (f"{float(r['Sigma Ruido media']):.3f}" if r.get("Sigma Ruido media") is not None else "-")
-        ret_val = r.get("Retención Nitidez (%)", r.get("Retencion Nitidez media"))
-        ret = f"{float(ret_val)*100:.1f}%" if ret_val is not None and float(ret_val) <= 2.0 else (f"{float(ret_val):.1f}%" if ret_val is not None else "-")
+    for idx, (_, r) in enumerate(ordenados, 1):
+        exp = str(obtener_campo(r, "ID Experimento", "Experimento", default="-"))[:38]
+        modo = str(obtener_campo(r, "Modo", default="-"))[:7]
+        lr = str(obtener_campo(r, "Learning Rate", "Tasa Aprendizaje (LR)", default="-"))[:6]
+
+        b_v = obtener_campo(r, "BRISQUE", "BRISQUE media")
+        n_v = obtener_campo(r, "NIQE", "NIQE media")
+        p_v = obtener_campo(r, "PIQE", "PIQE media")
+        s_v = obtener_campo(r, "Sigma Ruido", "Sigma Ruido media")
+
+        b = f"{float(b_v):.2f}" if b_v is not None else "-"
+        n = f"{float(n_v):.2f}" if n_v is not None else "-"
+        p = f"{float(p_v):.2f}" if p_v is not None else "-"
+        s = f"{float(s_v):.3f}" if s_v is not None else "-"
+
+        ret_val = obtener_campo(r, "Retención Nitidez (%)", "Retencion Nitidez media", "Retención Nitidez media")
+        if ret_val is not None:
+            try:
+                val = float(ret_val)
+                ret = f"{val*100:.1f}%" if val <= 2.0 else f"{val:.1f}%"
+            except (ValueError, TypeError):
+                ret = str(ret_val)
+        else:
+            ret = "-"
+
         print(f"{idx:<3} | {exp:<38} | {modo:<7} | {lr:<6} | {b:<8} | {n:<6} | {p:<6} | {s:<6} | {ret:<10}")
     print("=" * 100)
 
@@ -117,12 +145,14 @@ def generar_mosaico_frame(base, frame_idx, salida_png, modelos_mostrar=None):
         ]
 
     imgs = []
-    
     for titulo, subcarpeta in modelos_mostrar:
         ruta_img = resolver_carpeta_frame(base, subcarpeta, frame_idx)
         if ruta_img:
             img = cv2.imread(str(ruta_img))
-            imgs.append((titulo, img))
+            if img is not None:
+                imgs.append((titulo, img))
+            else:
+                print(f"Aviso: no se pudo leer imagen en {ruta_img}")
         else:
             print(f"Aviso: no se encontro frame {frame_idx} para {titulo} en {subcarpeta}")
 
@@ -130,34 +160,53 @@ def generar_mosaico_frame(base, frame_idx, salida_png, modelos_mostrar=None):
         print(f"No hay suficientes imagenes para generar el mosaico del frame {frame_idx}.")
         return False
 
-    h, w, _ = imgs[0][1].shape
-    
+    # Resolucion uniforme para todos los paneles (960 x 540)
+    # frames_originales es 1920x1080; frames_sin_hud y modelos de expos son 960x540
+    target_w, target_h = 960, 540
+
     # Coordenadas de zoom centrado en la zona de mineria/rio/orilla
-    ymin, ymax = int(h * 0.38), int(h * 0.68)
-    xmin, xmax = int(w * 0.38), int(w * 0.68)
-    
+    ymin, ymax = int(target_h * 0.38), int(target_h * 0.68)
+    xmin, xmax = int(target_w * 0.38), int(target_w * 0.68)
+
     paneles = []
-    for titulo, img in imgs:
+    for titulo, raw_img in imgs:
+        # Redimensionar al tamano objetivo uniforme
+        if raw_img.shape[1] != target_w or raw_img.shape[0] != target_h:
+            interp = cv2.INTER_AREA if raw_img.shape[1] > target_w else cv2.INTER_LANCZOS4
+            img = cv2.resize(raw_img, (target_w, target_h), interpolation=interp)
+        else:
+            img = raw_img.copy()
+
         disp = img.copy()
         cv2.rectangle(disp, (xmin, ymin), (xmax, ymax), (0, 255, 255), 2)
-        
+
         # Header banner
-        header = np.zeros((45, w, 3), dtype=np.uint8) + 25
+        header = np.zeros((45, target_w, 3), dtype=np.uint8) + 25
         cv2.putText(header, titulo, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.80, (255, 255, 255), 2, cv2.LINE_AA)
-        
-        # Zoom patch
+
+        # Zoom patch (35% del tamano uniforme)
         patch = img[ymin:ymax, xmin:xmax]
-        patch_zoom = cv2.resize(patch, (int(w * 0.35), int(h * 0.35)), interpolation=cv2.INTER_LANCZOS4)
-        cv2.rectangle(patch_zoom, (0, 0), (patch_zoom.shape[1]-1, patch_zoom.shape[0]-1), (0, 255, 255), 2)
-        
-        zh, zw, _ = patch_zoom.shape
-        disp[h - zh - 10 : h - 10, w - zw - 10 : w - 10] = patch_zoom
-        
+        zw, zh = int(target_w * 0.35), int(target_h * 0.35)
+        patch_zoom = cv2.resize(patch, (zw, zh), interpolation=cv2.INTER_LANCZOS4)
+        cv2.rectangle(patch_zoom, (0, 0), (zw - 1, zh - 1), (0, 255, 255), 2)
+
+        # Incrustar en la esquina inferior derecha garantizando limites exactos
+        y1 = target_h - zh - 10
+        y2 = target_h - 10
+        x1 = target_w - zw - 10
+        x2 = target_w - 10
+        disp[y1:y2, x1:x2] = patch_zoom
+
         paneles.append(np.vstack([header, disp]))
 
     if len(paneles) == 6:
         fila1 = np.hstack(paneles[:3])
         fila2 = np.hstack(paneles[3:])
+        mosaico = np.vstack([fila1, fila2])
+    elif len(paneles) % 2 == 0:
+        mitad = len(paneles) // 2
+        fila1 = np.hstack(paneles[:mitad])
+        fila2 = np.hstack(paneles[mitad:])
         mosaico = np.vstack([fila1, fila2])
     else:
         mosaico = np.hstack(paneles)
