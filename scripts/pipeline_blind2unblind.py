@@ -157,6 +157,7 @@ def argumentos():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--patch-size", type=int, default=128)
+    p.add_argument("--paciencia", type=int, default=6, help="Paciencia para Early Stopping (epocas sin mejora).")
     p.add_argument("--id-experimento", help="Identificador personalizado del experimento.")
     p.add_argument("--reiniciar", action="store_true")
     return p.parse_args()
@@ -206,8 +207,9 @@ def entrenar(a, r, rutas_frames, dispositivo):
     dataset = VideoFramesDataset(rutas_frames, patch_size=a.patch_size, es_entrenamiento=True)
     loader = DataLoader(dataset, batch_size=a.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
-    print(f"Iniciando entrenamiento Blind2Unblind ({a.epocas} epocas, lr={a.lr}, depth={a.depth})...")
+    print(f"Iniciando entrenamiento Blind2Unblind ({a.epocas} epocas, lr={a.lr}, depth={a.depth}, paciencia={a.paciencia})...")
     mejor_loss = float("inf")
+    epocas_sin_mejora = 0
 
     for epoca in range(1, a.epocas + 1):
         modelo.train()
@@ -248,9 +250,15 @@ def entrenar(a, r, rutas_frames, dispositivo):
         promedio = loss_total / max(1, pasos)
         print(f"Epoca {epoca} completada - Loss promedio: {promedio:.5f}")
 
-        if promedio < mejor_loss:
+        if promedio < mejor_loss - 1e-4:
             mejor_loss = promedio
+            epocas_sin_mejora = 0
             torch.save({"estado": modelo.state_dict(), "depth": a.depth, "num_channels_init": a.num_channels_init}, r["ckpt"])
+        else:
+            epocas_sin_mejora += 1
+            if epocas_sin_mejora >= a.paciencia:
+                print(f"Early Stopping activado en epoca {epoca} (sin mejora en {a.paciencia} epocas consecutivas).")
+                break
 
     print(f"Entrenamiento completado. Checkpoint guardado en {r['ckpt']}.")
     del modelo, optimizador, scheduler

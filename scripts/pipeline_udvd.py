@@ -141,6 +141,7 @@ def argumentos():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--patch-size", type=int, default=128)
+    p.add_argument("--paciencia", type=int, default=6, help="Paciencia para Early Stopping (epocas sin mejora).")
     p.add_argument("--id-experimento", help="Nombre del experimento.")
     p.add_argument("--reiniciar", action="store_true")
     return p.parse_args()
@@ -216,8 +217,9 @@ def entrenar(a, r, rutas_frames, dispositivo):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizador, T_max=a.epocas, eta_min=1e-6)
     criterio_l1 = nn.L1Loss()
 
-    print(f"Iniciando entrenamiento UDVD ({a.epocas} epocas, K={a.kernel_size}, lr={a.lr})...")
+    print(f"Iniciando entrenamiento UDVD ({a.epocas} epocas, K={a.kernel_size}, lr={a.lr}, paciencia={a.paciencia})...")
     mejor_loss = float("inf")
+    epocas_sin_mejora = 0
 
     for epoca in range(1, a.epocas + 1):
         modelo.train()
@@ -251,9 +253,15 @@ def entrenar(a, r, rutas_frames, dispositivo):
         promedio = loss_total / max(1, pasos)
         print(f"Epoca {epoca} completada - Loss promedio: {promedio:.5f}")
 
-        if promedio < mejor_loss:
+        if promedio < mejor_loss - 1e-4:
             mejor_loss = promedio
+            epocas_sin_mejora = 0
             torch.save({"estado": modelo.state_dict(), "kernel_size": a.kernel_size}, r["ckpt"])
+        else:
+            epocas_sin_mejora += 1
+            if epocas_sin_mejora >= a.paciencia:
+                print(f"Early Stopping activado en epoca {epoca} (sin mejora en {a.paciencia} epocas consecutivas).")
+                break
 
     print(f"Entrenamiento completado. Checkpoint guardado en {r['ckpt']}.")
     del modelo, optimizador, scheduler
