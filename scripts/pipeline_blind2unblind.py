@@ -158,6 +158,7 @@ def argumentos():
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--patch-size", type=int, default=128)
     p.add_argument("--paciencia", type=int, default=6, help="Paciencia para Early Stopping (epocas sin mejora).")
+    p.add_argument("--carpeta-salida", help="Ruta de carpeta de salida personalizada.")
     p.add_argument("--id-experimento", help="Identificador personalizado del experimento.")
     p.add_argument("--reiniciar", action="store_true")
     return p.parse_args()
@@ -187,10 +188,11 @@ def rutas_base(a, cfg):
     base_video = Path(v["ruta"]).resolve().parent.parent
 
     nombre = a.id_experimento or (f"blind2unblind_{a.modo}")
-    cache = RAIZ / "cache" / "denoising" / a.video / nombre
+    salida = Path(a.carpeta_salida).resolve() if a.carpeta_salida else (base_video / nombre)
+    cache = RAIZ / "cache" / "denoising" / a.video / (nombre.replace("/", "_"))
     return {
         "fuente": fuente,
-        "salida": base_video / nombre,
+        "salida": salida,
         "cache": cache,
         "ckpt": cache / "modelo.pth",
         "nombre": nombre,
