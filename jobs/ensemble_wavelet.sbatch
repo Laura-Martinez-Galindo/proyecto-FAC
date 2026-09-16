@@ -45,8 +45,20 @@ DIR_ENSEMBLE="${DIR_EXPOS}/ensemble_wavelet_udvd_b2u_${MODO}"
 
 NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)
 
+# Contar frames existentes para no re-procesar si ya están completos
+FRAMES_UDVD=$(find "${DIR_UDVD}/" -maxdepth 1 -name '*.png' 2>/dev/null | wc -l || echo 0)
+FRAMES_B2U=$(find "${DIR_B2U}/" -maxdepth 1 -name '*.png' 2>/dev/null | wc -l || echo 0)
+
 # 1. ENTRENAMIENTO E INFERENCIA DE MODELOS BASE
-if [ "$NUM_GPUS" -ge 2 ]; then
+if [[ "${FRAMES_UDVD}" -ge "${MAX_FRAMES}" && "${FRAMES_B2U}" -ge "${MAX_FRAMES}" ]]; then
+    echo "============================================================"
+    echo "MODELOS BASE YA COMPLETADOS EN DISCO:"
+    echo "  - UDVD: ${FRAMES_UDVD} / ${MAX_FRAMES} frames listos"
+    echo "  - Blind2Unblind: ${FRAMES_B2U} / ${MAX_FRAMES} frames listos"
+    echo "  -> Omitiendo re-entrenamiento e inferencia."
+    echo "  -> Pasando directo a la Fusión Wavelet y Métricas."
+    echo "============================================================"
+elif [ "$NUM_GPUS" -ge 2 ]; then
     echo "--- [1/2] Detectadas ${NUM_GPUS} GPUs: Ejecutando UDVD (GPU 0) y Blind2Unblind (GPU 1) en paralelo ---"
     CUDA_VISIBLE_DEVICES=0 "${RUTA_PYTHON}" scripts/pipeline_udvd.py \
         --video "${VIDEO_ID}" \

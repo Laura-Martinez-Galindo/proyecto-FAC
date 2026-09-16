@@ -38,6 +38,7 @@ def argumentos():
     p.add_argument("--modelos-entrada", nargs="+", required=True, help="Carpetas o IDs de modelos a fusionar.")
     p.add_argument("--pesos", nargs="+", type=float, help="Pesos para promedio ponderado.")
     p.add_argument("--max-frames", type=int)
+    p.add_argument("--carpeta-salida", help="Ruta de carpeta de salida personalizada.")
     p.add_argument("--id-experimento", required=True, help="Nombre del experimento de salida.")
     return p.parse_args()
 
@@ -108,7 +109,25 @@ def actualizar_registro(a, salida_dir, inicio, cantidad):
         fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
+def procesar_un_frame(args):
+    rutas_in, ruta_out, metodo, pesos = args
+    imgs = [cv2.imread(str(p), cv2.IMREAD_COLOR) for p in rutas_in]
+
+    if metodo == "wavelet":
+        out_img = fusion_wavelet_multiescala(imgs)
+    elif metodo == "mediana":
+        stack = np.stack(imgs, axis=0)
+        out_img = np.median(stack, axis=0).round().astype(np.uint8)
+    else:
+        norm_pesos = [p / sum(pesos) for p in pesos]
+        stack = sum(img.astype(np.float32) * w for img, w in zip(imgs, norm_pesos))
+        out_img = np.clip(stack, 0.0, 255.0).round().astype(np.uint8)
+
+    cv2.imwrite(str(ruta_out), out_img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+
+
 def main():
+    from concurrent.futures import ThreadPoolExecutor
     a = argumentos()
     inicio = time.monotonic()
     cfg = cargar_json()
@@ -126,33 +145,23 @@ def main():
         else:
             raise FileNotFoundError(f"No se encontro la carpeta del modelo: {mod}")
 
-    salida_dir = base_video / a.id_experimento
-    shutil.rmtree(salida_dir, ignore_errors=True)
+    salida_dir = Path(a.carpeta_salida).resolve() if a.carpeta_salida else (base_video / a.id_experimento)
     salida_dir.mkdir(parents=True, exist_ok=True)
 
     # Listar frames comunes
     listas_frames = [listar(c, a.max_frames) for c in carpetas_entrada]
     n_frames = min(len(l) for l in listas_frames)
 
+    pesos = a.pesos or [1.0 / len(carpetas_entrada)] * len(carpetas_entrada)
     print(f"Ejecutando Ensamble ({a.metodo_fusion}) sobre {len(carpetas_entrada)} modelos ({n_frames} frames)...")
 
-    for i in tqdm(range(n_frames), desc=f"Ensamble {a.id_experimento}", dynamic_ncols=True):
-        nombre_frame = listas_frames[0][i].name
-        imgs = [cv2.imread(str(listas_frames[m][i]), cv2.IMREAD_COLOR) for m in range(len(carpetas_entrada))]
+    tareas = [
+        ([listas_frames[m][i] for m in range(len(carpetas_entrada))], salida_dir / listas_frames[0][i].name, a.metodo_fusion, pesos)
+        for i in range(n_frames)
+    ]
 
-        if a.metodo_fusion == "wavelet":
-            out_img = fusion_wavelet_multiescala(imgs)
-        elif a.metodo_fusion == "mediana":
-            stack = np.stack(imgs, axis=0)
-            out_img = np.median(stack, axis=0).round().astype(np.uint8)
-        else:  # Promedio ponderado
-            pesos = a.pesos or [1.0 / len(imgs)] * len(imgs)
-            norm_pesos = [p / sum(pesos) for p in pesos]
-            stack = sum(img.astype(np.float32) * w for img, w in zip(imgs, norm_pesos))
-            out_img = np.clip(stack, 0.0, 255.0).round().astype(np.uint8)
-
-        destino = salida_dir / nombre_frame
-        cv2.imwrite(str(destino), out_img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(tqdm(pool.map(procesar_un_frame, tareas), total=n_frames, desc=f"Ensamble {a.id_experimento}", dynamic_ncols=True))
 
     actualizar_registro(a, salida_dir, inicio, n_frames)
     print(f"Ensamble {a.id_experimento} finalizado: {n_frames} frames guardados en {salida_dir}.")
