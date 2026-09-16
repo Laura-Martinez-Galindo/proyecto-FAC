@@ -45,6 +45,35 @@ fi
 
 echo
 echo "============================================================"
-echo "VIDEOS GENERADOS EN: videos/${VIDEO_ID}/videos_renderizados/"
+echo "EMPAQUETANDO Y SUBIENDO VIDEOS A GOOGLE DRIVE"
 echo "============================================================"
-ls -lh "videos/${VIDEO_ID}/videos_renderizados/"
+
+DIR_RENDER="videos/${VIDEO_ID}/videos_renderizados"
+DIR_COMPRIMIDOS="videos/comprimidos"
+TAR_VIDEOS="${DIR_COMPRIMIDOS}/${VIDEO_ID}_videos_renderizados.tar.gz"
+
+mkdir -p "${DIR_COMPRIMIDOS}"
+
+echo "--- 1. Creando paquete comprimido ${TAR_VIDEOS} ---"
+tar -cf - -C "videos/${VIDEO_ID}" "videos_renderizados" | gzip -1 > "${TAR_VIDEOS}"
+
+if command -v rclone &> /dev/null; then
+    RCLONE_FLAGS="--transfers 32 --checkers 64 --drive-chunk-size 64M --buffer-size 64M --fast-list --progress"
+    
+    echo "--- 2. Subiendo videos .mp4 individuales a Google Drive (visibles/reproducibles) ---"
+    rclone copy "${DIR_RENDER}" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/videos_renderizados/" ${RCLONE_FLAGS} || true
+    
+    echo "--- 3. Subiendo archivo comprimido ${TAR_VIDEOS} a Google Drive ---"
+    rclone copy "${TAR_VIDEOS}" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/comprimidos/" ${RCLONE_FLAGS} || true
+else
+    echo "Advertencia: rclone no esta disponible en PATH para subida automatica."
+fi
+
+echo
+echo "============================================================"
+echo "VIDEOS RENDERIZADOS Y SUBIDOS EXITOSAMENTE A GOOGLE DRIVE"
+echo "Carpeta local: ${DIR_RENDER}"
+echo "Paquete local: ${TAR_VIDEOS}"
+echo "Fin: $(date --iso-8601=seconds)"
+echo "============================================================"
+ls -lh "${DIR_RENDER}"
