@@ -72,10 +72,11 @@ def procesar_un_frame(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Mosaico Top 10 Side-by-Side")
+    p = argparse.ArgumentParser(description="Mosaico Top 10 Side-by-Side (Bajo Consumo de Memoria)")
     p.add_argument("--video", default="video2")
     p.add_argument("--modelo", default="videos/video2/expos/udvd_destriping_t7_ult10min_sin_hud")
     p.add_argument("--ultimos-frames", type=int, default=18000)
+    p.add_argument("--paso-muestreo", type=int, default=5, help="Evaluar 1 de cada N frames para maxima velocidad (default 5 = 3600 frames).")
     p.add_argument("--top-n", type=int, default=10)
     p.add_argument("--salida", default="figuras_tesis/mosaico_top10_side_by_side.png")
     args = p.parse_args()
@@ -91,34 +92,37 @@ def main():
     frames_mod = sorted([p for p in dir_mod.iterdir() if p.suffix.lower() in exts], key=natural_key)[-args.ultimos_frames:]
 
     n_frames = min(len(frames_orig), len(frames_sinhud), len(frames_mod))
-    print(f"Buscando los Top {args.top_n} casos con mayor reduccion de ruido en {n_frames} frames...")
+    print(f"Evaluando {n_frames // args.paso_muestreo} frames candidatos con bajo consumo de memoria (<100 MB)...")
 
-    tareas = [
-        (i, frames_orig[i], frames_sinhud[i], frames_mod[i])
-        for i in range(n_frames)
-    ]
+    # Muestreo controlado para no saturar la RAM del nodo
+    indices = list(range(0, n_frames, args.paso_muestreo))
+    tareas = [(i, frames_orig[i], frames_sinhud[i], frames_mod[i]) for i in indices]
 
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        resultados = list(pool.map(procesar_un_frame, tareas))
+    resultados = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for res in tqdm(pool.map(procesar_un_frame, tareas), total=len(tareas), desc="Buscando mayores mejoras", dynamic_ncols=True):
+            if res is not None:
+                resultados.append(res)
 
-    resultados = [r for r in resultados if r is not None]
     top_frames = sorted(resultados, key=lambda x: x["mejora_pct"], reverse=True)[:args.top_n]
 
-    print(f"Construyendo mosaico comparativo consolidado ({args.top_n} filas x 3 columnas)...")
-
+    print(f"\nConstruyendo imagen consolidada ({args.top_n} filas x 3 columnas)...")
     filas_mosaico = []
-    
+
     for rank, item in enumerate(top_frames, start=1):
         img1 = cv2.imread(str(item["ruta_orig"]))
         img2 = cv2.imread(str(item["ruta_sinhud"]))
         img3 = cv2.imread(str(item["ruta_mod"]))
+
+        if img1 is None or img2 is None or img3 is None:
+            continue
 
         # Banners
         img1 = banner_texto(img1, f"#{rank:02d} | Original ({item['nombre']}) | Sigma={item['s_orig']:.2f}")
         img2 = banner_texto(img2, f"#{rank:02d} | Sin HUD (ProPainter) | Sigma={item['s_sinhud']:.2f}")
         img3 = banner_texto(img3, f"#{rank:02d} | UDVD Destriping T=7 | Sigma={item['s_mod']:.2f} | Mejora: +{item['mejora_pct']:.1f}%", color_texto=(0, 255, 120))
 
-        # Redimensionar cada panel para mantener un peso ligero en el poster final (ancho 640px por columna)
+        # Redimensionar cada panel (640px de ancho)
         h, w, _ = img1.shape
         w_nuevo = 640
         h_nuevo = int(h * (w_nuevo / w))
@@ -137,9 +141,9 @@ def main():
     cv2.putText(
         encabezado,
         f"TOP {args.top_n} CASOS DE MAYOR REDUCCION DE RUIDO TERMICO FLIR - COMPARATIVA DIRECTA (VIDEO 2)",
-        (30, 45),
+        (25, 45),
         cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
+        0.85,
         (255, 255, 255),
         2,
         cv2.LINE_AA
