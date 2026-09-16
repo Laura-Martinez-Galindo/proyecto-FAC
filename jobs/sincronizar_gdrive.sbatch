@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
 #SBATCH --job-name=sync_gdrive
-#SBATCH --partition=medium
+#SBATCH --partition=long
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=8G
-#SBATCH --time=12:00:00
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=16G
+#SBATCH --time=7-00:00:00
 #SBATCH --output=jobs/logs/sync_gdrive_%j.out
 #SBATCH --error=jobs/logs/sync_gdrive_%j.err
 #SBATCH --mail-type=END,FAIL
@@ -21,7 +21,7 @@ cd "${RUTA_PROYECTO}"
 mkdir -p jobs/logs
 
 echo "============================================================"
-echo "SINCRONIZACIÓN DE VIDEOS CON GOOGLE DRIVE (RCLONE - CPU)"
+echo "SINCRONIZACIÓN DE ALTA VELOCIDAD CON GOOGLE DRIVE (CPU)"
 echo "Inicio: $(date --iso-8601=seconds)"
 echo "============================================================"
 
@@ -30,54 +30,78 @@ if ! command -v rclone &> /dev/null; then
     exit 1
 fi
 
-if ! rclone listremotes | grep -q "gdrive"; then
-    echo "ERROR: El remote 'gdrive' no está configurado en rclone." >&2
-    exit 1
-fi
+RCLONE_FLAGS="--transfers 32 --checkers 64 --drive-chunk-size 64M --drive-upload-cutoff 32M --buffer-size 64M --fast-list --progress"
 
-sincronizar_video() {
-    local vid="$1"
-    echo
-    echo "--- Sincronizando ${vid} ---"
+# 1. Función para empaquetar y subir en .tar.gz (Ultra-rápido)
+empaquetar_y_subir() {
+    local ruta_origen="$1"
+    local nombre_paquete="$2"
+    local ruta_destino_gdrive="$3"
 
-    if [[ -d "videos/${vid}/frames_originales" ]]; then
-        echo "Subiendo frames_originales de ${vid}..."
-        rclone copy "videos/${vid}/frames_originales" "gdrive:proyecto-FAC/videos/${vid}/frames_originales" \
-            --transfers 16 --checkers 32 --fast-list --progress || true
-    fi
+    if [[ -d "${ruta_origen}" ]]; then
+        local ruta_tar="videos/comprimidos/${nombre_paquete}.tar.gz"
+        mkdir -p "videos/comprimidos"
 
-    if [[ -d "videos/${vid}/mascaras_hud" ]]; then
-        echo "Subiendo mascaras_hud de ${vid}..."
-        rclone copy "videos/${vid}/mascaras_hud" "gdrive:proyecto-FAC/videos/${vid}/mascaras_hud" \
-            --transfers 16 --checkers 32 --fast-list --progress || true
-    fi
+        if [[ ! -f "${ruta_tar}" ]]; then
+            echo "--- Empaquetando ${nombre_paquete}.tar.gz desde ${ruta_origen} ---"
+            tar -cf - -C "$(dirname "${ruta_origen}")" "$(basename "${ruta_origen}")" | gzip -1 > "${ruta_tar}"
+        fi
 
-    if [[ -d "videos/${vid}/frames_sin_hud" ]]; then
-        echo "Subiendo frames_sin_hud de ${vid}..."
-        rclone copy "videos/${vid}/frames_sin_hud" "gdrive:proyecto-FAC/videos/${vid}/frames_sin_hud" \
-            --transfers 16 --checkers 32 --fast-list --progress || true
-    fi
-
-    if [[ -f "videos/${vid}/resumen.xlsx" ]]; then
-        echo "Subiendo resumen.xlsx de ${vid}..."
-        rclone copy "videos/${vid}/resumen.xlsx" "gdrive:proyecto-FAC/videos/${vid}/" || true
-    fi
-
-    if [[ -f "videos/${vid}/resumen_experimentos.xlsx" ]]; then
-        echo "Subiendo resumen_experimentos.xlsx de ${vid}..."
-        rclone copy "videos/${vid}/resumen_experimentos.xlsx" "gdrive:proyecto-FAC/videos/${vid}/" || true
+        echo "Subiendo ${nombre_paquete}.tar.gz a ${ruta_destino_gdrive}..."
+        rclone copy "${ruta_tar}" "${ruta_destino_gdrive}" ${RCLONE_FLAGS} || true
     fi
 }
 
-# 1. Sincronizar Video 1
-sincronizar_video "video1"
+echo "============================================================"
+echo "FASE 1: SINCRONIZACIÓN DE VIDEO 1 (EXCELS + PAQUETES TAR.GZ)"
+echo "============================================================"
 
-# 2. Sincronizar Video 2 (rclone omite los que ya subió y retoma solo los faltantes)
-sincronizar_video "video2"
+# Excels de Video 1
+rclone copy "videos/video1/resumen.xlsx" "gdrive:proyecto-FAC/videos/video1/" 2>/dev/null || true
+rclone copy "videos/video1/resumen_experimentos.xlsx" "gdrive:proyecto-FAC/videos/video1/" 2>/dev/null || true
+
+# Paquetes base Video 1
+empaquetar_y_subir "videos/video1/frames_originales" "video1_frames_originales" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+empaquetar_y_subir "videos/video1/mascaras_hud" "video1_mascaras_hud" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+empaquetar_y_subir "videos/video1/frames_sin_hud" "video1_frames_sin_hud" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+
+# Modelos específicos solicitados de Video 1 (UDVD, Blind2Unblind y Ensamble Wavelet)
+empaquetar_y_subir "videos/video1/expos/udvd_sinhud" "video1_udvd_sinhud" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+empaquetar_y_subir "videos/video1/UDVD_SinHUD_K5_lr1e3" "video1_udvd_sinhud" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+empaquetar_y_subir "videos/video1/expos/blind2unblind_sinhud" "video1_blind2unblind_sinhud" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+empaquetar_y_subir "videos/video1/Blind2Unblind_SinHUD_d4_lr1e3" "video1_blind2unblind_sinhud" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+empaquetar_y_subir "videos/video1/SuperEnsemble_Wavelet_UDVD_B2U" "video1_ensemble_wavelet" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+empaquetar_y_subir "videos/video1/Ensemble_Wavelet_SinHUD" "video1_ensemble_wavelet" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
+empaquetar_y_subir "videos/video1/expos/ensemble_wavelet_triple_sinhud" "video1_ensemble_wavelet" "gdrive:proyecto-FAC/videos/video1/comprimidos/"
 
 echo
 echo "============================================================"
-echo "SINCRONIZACIÓN COMPLETADA EXITOSAMENTE"
+echo "FASE 2: SINCRONIZACIÓN DE VIDEO 2 (PAQUETES TAR.GZ + EXCELS)"
+echo "============================================================"
+
+# Excels de Video 2
+rclone copy "videos/video2/resumen.xlsx" "gdrive:proyecto-FAC/videos/video2/" 2>/dev/null || true
+rclone copy "videos/video2/resumen_experimentos.xlsx" "gdrive:proyecto-FAC/videos/video2/" 2>/dev/null || true
+
+# Paquetes de Video 2 (en tar.gz para subida inmediata en minutos)
+empaquetar_y_subir "videos/video2/mascaras_hud" "video2_mascaras_hud" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
+empaquetar_y_subir "videos/video2/frames_sin_hud" "video2_frames_sin_hud" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
+empaquetar_y_subir "videos/video2/expos/udvd_sin_hud" "video2_udvd_sin_hud" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
+empaquetar_y_subir "videos/video2/expos/blind2unblind_sin_hud" "video2_blind2unblind_sin_hud" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
+empaquetar_y_subir "videos/video2/expos/ensemble_wavelet_udvd_b2u_sin_hud" "video2_ensemble_wavelet" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
+
+echo
+echo "============================================================"
+echo "FASE 3: TERMINAR SUBIDA INDIVIDUAL DE FRAMES ORIGINALES (VIDEO 2)"
+echo "============================================================"
+if [[ -d "videos/video2/frames_originales" ]]; then
+    echo "Retomando subida individual de frames_originales (desde el 66%)..."
+    rclone copy "videos/video2/frames_originales" "gdrive:proyecto-FAC/videos/video2/frames_originales" ${RCLONE_FLAGS} || true
+fi
+
+echo
+echo "============================================================"
+echo "SINCRONIZACIÓN TOTAL COMPLETADA CON ÉXITO"
 echo "Fin: $(date --iso-8601=seconds)"
 echo "============================================================"
 
