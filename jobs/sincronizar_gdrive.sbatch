@@ -82,6 +82,7 @@ echo "============================================================"
 # Excels de Video 2
 rclone copy "videos/video2/resumen.xlsx" "gdrive:proyecto-FAC/videos/video2/" 2>/dev/null || true
 rclone copy "videos/video2/resumen_experimentos.xlsx" "gdrive:proyecto-FAC/videos/video2/" 2>/dev/null || true
+rclone copy "videos/video2/resultados_video2.xlsx" "gdrive:proyecto-FAC/videos/video2/" 2>/dev/null || true
 
 # Paquetes de Video 2 (en tar.gz para subida inmediata en minutos)
 empaquetar_y_subir "videos/video2/mascaras_hud" "video2_mascaras_hud" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
@@ -89,6 +90,10 @@ empaquetar_y_subir "videos/video2/frames_sin_hud" "video2_frames_sin_hud" "gdriv
 empaquetar_y_subir "videos/video2/expos/udvd_sin_hud" "video2_udvd_sin_hud" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
 empaquetar_y_subir "videos/video2/expos/blind2unblind_sin_hud" "video2_blind2unblind_sin_hud" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
 empaquetar_y_subir "videos/video2/expos/ensemble_wavelet_udvd_b2u_sin_hud" "video2_ensemble_wavelet" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
+
+# Videos Renderizados (.mp4 y comparativos)
+rclone copy "videos/video1/videos_renderizados" "gdrive:proyecto-FAC/videos/video1/videos_renderizados" ${RCLONE_FLAGS} 2>/dev/null || true
+rclone copy "videos/video2/videos_renderizados" "gdrive:proyecto-FAC/videos/video2/videos_renderizados" ${RCLONE_FLAGS} 2>/dev/null || true
 
 echo
 echo "============================================================"
@@ -98,6 +103,11 @@ if [[ -d "videos/video2/frames_originales" ]]; then
     echo "Retomando subida individual de frames_originales (desde el 66%)..."
     rclone copy "videos/video2/frames_originales" "gdrive:proyecto-FAC/videos/video2/frames_originales" ${RCLONE_FLAGS} || true
 fi
+
+echo
+echo "============================================================"
+echo "SINCRONIZACIÓN FINALIZADA CON ÉXITO: $(date --iso-8601=seconds)"
+echo "============================================================"
 
 echo
 echo "============================================================"
