@@ -31,14 +31,28 @@ RAIZ = Path(__file__).resolve().parent.parent
 RUTA_JSON = RAIZ / "config" / "videos.json"
 
 
-# 1. Red de Prediccion de Nucleos Dinamicos (UDVD)
+## 1. Filtro Opcional de Destriping Columnar FPN
+def aplicar_destriping_columnar(img_rgb):
+    """
+    Elimina ruido de patron fijo (FPN) columnar tipico de microbolometros FLIR.
+    Calcula el perfil medio por columna y remueve la modulacion de alta frecuencia inter-columnar.
+    """
+    img_float = img_rgb.astype(np.float32)
+    perfil = np.mean(img_float, axis=0, keepdims=True)  # (1, W, C)
+    perfil_suave = cv2.GaussianBlur(perfil, (31, 1), 10.0)
+    fpn_residuo = perfil - perfil_suave
+    img_destriped = img_float - fpn_residuo
+    return np.clip(img_destriped, 0.0, 255.0).astype(np.uint8)
+
+
+# 2. Red de Prediccion de Nucleos Dinamicos (UDVD)
 class DynamicKernelPredictor(nn.Module):
     def __init__(self, num_frames=5, in_channels=3, kernel_size=5, base_ch=32):
         super().__init__()
         self.num_frames = num_frames
         self.kernel_size = kernel_size
         self.in_channels = in_channels
-        in_total = num_frames * in_channels  # 15 canales
+        in_total = num_frames * in_channels
 
         # U-Net liviana para estimar pesos de filtrado dinamico (K*K por cada frame temporal)
         out_kernels = num_frames * (kernel_size * kernel_size)
@@ -83,13 +97,14 @@ class DynamicKernelPredictor(nn.Module):
         return filtered
 
 
-# 2. Dataset Temporal
+# 3. Dataset Temporal
 class UDVDDataset(Dataset):
-    def __init__(self, rutas_frames, num_frames=5, patch_size=128, es_entrenamiento=True):
+    def __init__(self, rutas_frames, num_frames=5, patch_size=128, es_entrenamiento=True, destriping=False):
         self.rutas = rutas_frames
         self.num_frames = num_frames
         self.patch_size = patch_size
         self.es_entrenamiento = es_entrenamiento
+        self.destriping = destriping
 
     def __len__(self):
         return max(0, len(self.rutas) - self.num_frames + 1)
@@ -106,6 +121,10 @@ class UDVDDataset(Dataset):
                 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
             else:
                 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+            if self.destriping:
+                rgb = aplicar_destriping_columnar(rgb)
+
             ventana.append(rgb)
 
         h, w, _ = ventana[0].shape
@@ -123,18 +142,21 @@ class UDVDDataset(Dataset):
                 ventana = [np.rot90(f, rot) for f in ventana]
 
         tensores = [torch.from_numpy(np.ascontiguousarray(f)).permute(2, 0, 1).float().div(255.0) for f in ventana]
-        stack = torch.cat(tensores, dim=0)  # (15, H, W)
+        stack = torch.cat(tensores, dim=0)  # (T*3, H, W)
         center = tensores[self.num_frames // 2]
         return stack, center
 
 
-# 3. Argumentos y Rutas
+# 4. Argumentos y Rutas
 def argumentos():
     p = argparse.ArgumentParser(description="Pipeline UDVD (Unified Dynamic Video Denoising).")
     p.add_argument("--video", required=True)
     p.add_argument("--modo", choices=("original", "sin_hud"), required=True)
     p.add_argument("--etapa", choices=("entrenar", "inferir", "todo"), default="todo")
     p.add_argument("--max-frames", type=int)
+    p.add_argument("--ultimos-frames", type=int, help="Procesar exclusivamente los ultimos N frames del video.")
+    p.add_argument("--num-frames", type=int, default=5, help="Ventana temporal T de frames (impar: 5, 7, etc.).")
+    p.add_argument("--destriping", action="store_true", help="Aplica pre-filtrado columnar FPN anti-rayas.")
     p.add_argument("--epocas", type=int, default=15)
     p.add_argument("--pasos-por-epoca", type=int, default=300)
     p.add_argument("--kernel-size", type=int, default=5)
@@ -157,10 +179,14 @@ def natural(p):
     return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", p.name)]
 
 
-def listar(carpeta, limite=None):
+def listar(carpeta, limite=None, ultimos=None):
     exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-    rutas = sorted((p for p in carpeta.iterdir() if p.is_file() and p.suffix.lower() in exts), key=natural)
-    return rutas[:limite] if limite else rutas
+    rutas = sorted((p for p in Path(carpeta).iterdir() if p.is_file() and p.suffix.lower() in exts), key=natural)
+    if ultimos and ultimos > 0:
+        return rutas[-ultimos:]
+    if limite and limite > 0:
+        return rutas[:limite]
+    return rutas
 
 
 def rutas_base(a, cfg):
@@ -193,6 +219,8 @@ def actualizar_registro(a, r, etiqueta, inicio, cantidad):
         "checkpoint": str(r["ckpt"].relative_to(RAIZ)),
         "frames_procesados": cantidad,
         "kernel_size": a.kernel_size,
+        "num_frames": a.num_frames,
+        "destriping": a.destriping,
         "lr": a.lr,
         "fecha_ejecucion": datetime.now().astimezone().isoformat(timespec="seconds"),
         "tiempo_total_minutos": (time.monotonic() - inicio) / 60.0,
@@ -211,15 +239,15 @@ def actualizar_registro(a, r, etiqueta, inicio, cantidad):
 
 def entrenar(a, r, rutas_frames, dispositivo):
     r["cache"].mkdir(parents=True, exist_ok=True)
-    dataset = UDVDDataset(rutas_frames, num_frames=5, patch_size=a.patch_size, es_entrenamiento=True)
+    dataset = UDVDDataset(rutas_frames, num_frames=a.num_frames, patch_size=a.patch_size, es_entrenamiento=True, destriping=a.destriping)
     loader = DataLoader(dataset, batch_size=a.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
-    modelo = DynamicKernelPredictor(num_frames=5, in_channels=3, kernel_size=a.kernel_size, base_ch=32).to(dispositivo)
+    modelo = DynamicKernelPredictor(num_frames=a.num_frames, in_channels=3, kernel_size=a.kernel_size, base_ch=32).to(dispositivo)
     optimizador = optim.Adam(modelo.parameters(), lr=a.lr, weight_decay=1e-8)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizador, T_max=a.epocas, eta_min=1e-6)
     criterio_l1 = nn.L1Loss()
 
-    print(f"Iniciando entrenamiento UDVD ({a.epocas} epocas, K={a.kernel_size}, lr={a.lr}, paciencia={a.paciencia})...")
+    print(f"Iniciando entrenamiento UDVD ({a.epocas} epocas, T={a.num_frames}, K={a.kernel_size}, destriping={a.destriping}, lr={a.lr}, paciencia={a.paciencia})...")
     mejor_loss = float("inf")
     epocas_sin_mejora = 0
 
@@ -238,7 +266,7 @@ def entrenar(a, r, rutas_frames, dispositivo):
 
             # Consistencia temporal multi-frame
             b, _, ph, pw = stack.shape
-            media_temp = stack.view(b, 5, 3, ph, pw).mean(dim=1)
+            media_temp = stack.view(b, a.num_frames, 3, ph, pw).mean(dim=1)
             loss = criterio_l1(denoised, media_temp)
 
             loss.backward()
@@ -258,7 +286,7 @@ def entrenar(a, r, rutas_frames, dispositivo):
         if promedio < mejor_loss - 1e-4:
             mejor_loss = promedio
             epocas_sin_mejora = 0
-            torch.save({"estado": modelo.state_dict(), "kernel_size": a.kernel_size}, r["ckpt"])
+            torch.save({"estado": modelo.state_dict(), "kernel_size": a.kernel_size, "num_frames": a.num_frames}, r["ckpt"])
         else:
             epocas_sin_mejora += 1
             if epocas_sin_mejora >= a.paciencia:
@@ -276,19 +304,23 @@ def inferir(a, r, rutas_frames, dispositivo, inicio):
     if not r["ckpt"].is_file():
         raise FileNotFoundError(f"No existe checkpoint en {r['ckpt']}")
 
-    modelo = DynamicKernelPredictor(num_frames=5, in_channels=3, kernel_size=a.kernel_size, base_ch=32).to(dispositivo)
     checkpoint = torch.load(r["ckpt"], map_location=dispositivo)
+    num_frames = checkpoint.get("num_frames", a.num_frames)
+    kernel_size = checkpoint.get("kernel_size", a.kernel_size)
+
+    modelo = DynamicKernelPredictor(num_frames=num_frames, in_channels=3, kernel_size=kernel_size, base_ch=32).to(dispositivo)
     modelo.load_state_dict(checkpoint["estado"])
     modelo.eval()
 
     r["salida"].mkdir(parents=True, exist_ok=True)
-    print(f"Ejecutando inferencia UDVD en {len(rutas_frames)} frames...")
+    print(f"Ejecutando inferencia UDVD (T={num_frames}, destriping={a.destriping}) en {len(rutas_frames)} frames...")
 
     n_frames = len(rutas_frames)
+    half_w = num_frames // 2
 
     with torch.inference_mode():
         for i in tqdm(range(n_frames), desc="Inferiendo UDVD", dynamic_ncols=True):
-            indices = [min(max(i + k, 0), n_frames - 1) for k in range(-2, 3)]
+            indices = [min(max(i + k, 0), n_frames - 1) for k in range(-half_w, half_w + 1)]
             ventana = []
             for idx in indices:
                 bgr = cv2.imread(str(rutas_frames[idx]), cv2.IMREAD_UNCHANGED)
@@ -298,6 +330,10 @@ def inferir(a, r, rutas_frames, dispositivo, inicio):
                     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGB)
                 else:
                     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+                if a.destriping:
+                    rgb = aplicar_destriping_columnar(rgb)
+
                 ventana.append(rgb)
 
             h, w, _ = ventana[0].shape
@@ -336,7 +372,7 @@ def main():
     inicio = time.monotonic()
     cfg = cargar_json()
     r = rutas_base(a, cfg)
-    rutas_frames = listar(r["fuente"], a.max_frames)
+    rutas_frames = listar(r["fuente"], limite=a.max_frames, ultimos=a.ultimos_frames)
     dispositivo = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     if a.reiniciar:

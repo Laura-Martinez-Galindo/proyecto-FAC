@@ -75,6 +75,7 @@ def obtener_argumentos():
     parser.add_argument("--experimento", help="Nombre o identificador descriptivo del experimento para la tabla.")
     parser.add_argument("--archivo-resumen", default="resumen.xlsx", help="Nombre del archivo Excel de salida dentro de la carpeta del video (ej. resumen.xlsx o resumen_experimentos.xlsx).")
     parser.add_argument("--max-frames", type=int, help="Limite maximo de frames a evaluar.")
+    parser.add_argument("--ultimos-frames", type=int, help="Evaluar exclusivamente los ultimos N frames de la carpeta.")
     parser.add_argument("--parametros-extra", default="", help="Texto o JSON con detalles de hiperparametros.")
     return parser.parse_args()
 
@@ -225,16 +226,20 @@ def natural_key(p):
     return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", p.name)]
 
 
-def listar_frames(carpeta_entrada, max_frames=None):
+def listar_frames(carpeta_entrada, max_frames=None, ultimos_frames=None):
     """Obtiene y ordena los frames disponibles."""
     extensiones = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-    rutas_frames = [ruta for ruta in carpeta_entrada.iterdir() if ruta.is_file() and ruta.suffix.lower() in extensiones]
+    rutas_frames = [ruta for ruta in Path(carpeta_entrada).iterdir() if ruta.is_file() and ruta.suffix.lower() in extensiones]
     rutas_frames.sort(key=natural_key)
 
     if not rutas_frames:
         raise RuntimeError(f"No se encontraron imagenes en: {carpeta_entrada}")
 
-    return rutas_frames[:max_frames] if max_frames else rutas_frames
+    if ultimos_frames and ultimos_frames > 0:
+        return rutas_frames[-ultimos_frames:]
+    if max_frames and max_frames > 0:
+        return rutas_frames[:max_frames]
+    return rutas_frames
 
 
 def cargar_imagen_rgb(ruta_imagen):
@@ -550,7 +555,7 @@ def ejecutar(args):
         args.video, modelo_id, args.carpeta_directa, args.archivo_resumen, configuracion
     )
 
-    rutas_frames = listar_frames(carpeta_entrada, args.max_frames)
+    rutas_frames = listar_frames(carpeta_entrada, max_frames=args.max_frames, ultimos_frames=args.ultimos_frames)
 
     id_exp = args.experimento or f"{modelo_id}_{modo}"
     print(f"Iniciando calculo de metricas para {id_exp}...")

@@ -175,8 +175,10 @@ def argumentos():
     p.add_argument("--modo", choices=("original", "sin_hud"), required=True)
     p.add_argument("--etapa", choices=("entrenar", "inferir", "todo"), default="todo")
     p.add_argument("--max-frames", type=int)
+    p.add_argument("--ultimos-frames", type=int, help="Procesar exclusivamente los ultimos N frames del video.")
     p.add_argument("--epocas", type=int, default=15)
     p.add_argument("--pasos-por-epoca", type=int, default=300)
+    p.add_argument("--paciencia", type=int, default=6, help="Paciencia para Early Stopping (epocas sin mejora).")
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--num-channels-init", type=int, default=48)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -185,6 +187,7 @@ def argumentos():
     p.add_argument("--use-n2v2", action="store_true", default=True)
     p.add_argument("--sin-n2v2", dest="use_n2v2", action="store_false")
     p.add_argument("--struct-n2v", choices=("none", "horizontal", "vertical", "cross"), default="none")
+    p.add_argument("--carpeta-salida", help="Ruta de carpeta de salida personalizada.")
     p.add_argument("--id-experimento", help="Nombre del experimento.")
     p.add_argument("--reiniciar", action="store_true")
     return p.parse_args()
@@ -199,10 +202,14 @@ def natural(p):
     return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", p.name)]
 
 
-def listar(carpeta, limite=None):
+def listar(carpeta, limite=None, ultimos=None):
     exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-    rutas = sorted((p for p in carpeta.iterdir() if p.is_file() and p.suffix.lower() in exts), key=natural)
-    return rutas[:limite] if limite else rutas
+    rutas = sorted((p for p in Path(carpeta).iterdir() if p.is_file() and p.suffix.lower() in exts), key=natural)
+    if ultimos and ultimos > 0:
+        return rutas[-ultimos:]
+    if limite and limite > 0:
+        return rutas[:limite]
+    return rutas
 
 
 def rutas_base(a, cfg):
@@ -214,10 +221,11 @@ def rutas_base(a, cfg):
     base_video = Path(v["ruta"]).resolve().parent.parent
 
     nombre = a.id_experimento or ("n2v" if a.modo == "original" else "n2v_sin_hud")
-    cache = RAIZ / "cache" / "denoising" / a.video / nombre
+    salida = Path(a.carpeta_salida).resolve() if a.carpeta_salida else (base_video / nombre)
+    cache = RAIZ / "cache" / "denoising" / a.video / (nombre.replace("/", "_"))
     return {
         "fuente": fuente,
-        "salida": base_video / nombre,
+        "salida": salida,
         "cache": cache,
         "ckpt": cache / "modelo.pth",
         "nombre": nombre,
@@ -261,8 +269,9 @@ def entrenar(a, r, rutas_frames, dispositivo):
     optimizador = optim.Adam(modelo.parameters(), lr=a.lr, weight_decay=1e-8)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizador, T_max=a.epocas, eta_min=1e-6)
 
-    print(f"Iniciando entrenamiento Noise2Void ({a.epocas} epocas, lr={a.lr}, depth={a.depth}, struct={a.struct_n2v})...")
+    print(f"Iniciando entrenamiento Noise2Void ({a.epocas} epocas, lr={a.lr}, depth={a.depth}, struct={a.struct_n2v}, paciencia={a.paciencia})...")
     mejor_loss = float("inf")
+    epocas_sin_mejora = 0
 
     for epoca in range(1, a.epocas + 1):
         modelo.train()
@@ -296,9 +305,15 @@ def entrenar(a, r, rutas_frames, dispositivo):
         promedio = loss_total / max(1, pasos)
         print(f"Epoca {epoca} completada - Loss promedio: {promedio:.5f}")
 
-        if promedio < mejor_loss:
+        if promedio < mejor_loss - 1e-4:
             mejor_loss = promedio
+            epocas_sin_mejora = 0
             torch.save({"estado": modelo.state_dict(), "depth": a.depth, "num_channels_init": a.num_channels_init}, r["ckpt"])
+        else:
+            epocas_sin_mejora += 1
+            if epocas_sin_mejora >= a.paciencia:
+                print(f"Early Stopping activado en epoca {epoca} (sin mejora en {a.paciencia} epocas consecutivas).")
+                break
 
     print(f"Entrenamiento completado. Checkpoint guardado en {r['ckpt']}.")
     del modelo, optimizador, scheduler
@@ -367,7 +382,7 @@ def main():
     inicio = time.monotonic()
     cfg = cargar_json()
     r = rutas_base(a, cfg)
-    rutas_frames = listar(r["fuente"], a.max_frames)
+    rutas_frames = listar(r["fuente"], limite=a.max_frames, ultimos=a.ultimos_frames)
     dispositivo = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     if a.reiniciar:

@@ -37,7 +37,9 @@ def argumentos():
     p.add_argument("--metodo-fusion", choices=("wavelet", "promedio", "mediana"), default="wavelet")
     p.add_argument("--modelos-entrada", nargs="+", required=True, help="Carpetas o IDs de modelos a fusionar.")
     p.add_argument("--pesos", nargs="+", type=float, help="Pesos para promedio ponderado.")
+    p.add_argument("--umbral-ruido", type=float, default=0.0, help="Umbral suave de ruido para altas frecuencias en Wavelet.")
     p.add_argument("--max-frames", type=int)
+    p.add_argument("--ultimos-frames", type=int, help="Procesar exclusivamente los ultimos N frames de cada modelo.")
     p.add_argument("--carpeta-salida", help="Ruta de carpeta de salida personalizada.")
     p.add_argument("--id-experimento", required=True, help="Nombre del experimento de salida.")
     return p.parse_args()
@@ -52,17 +54,22 @@ def natural(p):
     return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", p.name)]
 
 
-def listar(carpeta, limite=None):
+def listar(carpeta, limite=None, ultimos=None):
     exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
     rutas = sorted((p for p in Path(carpeta).iterdir() if p.is_file() and p.suffix.lower() in exts), key=natural)
-    return rutas[:limite] if limite else rutas
+    if ultimos and ultimos > 0:
+        return rutas[-ultimos:]
+    if limite and limite > 0:
+        return rutas[:limite]
+    return rutas
 
 
-def fusion_wavelet_multiescala(imgs):
+def fusion_wavelet_multiescala(imgs, umbral_ruido=0.0):
     """
     Fusion en dominio frecuencial multi-escala:
-    - imgs[0] (Base Temporal UDVD): Aporta la luminancia y bajas frecuencias térmicas estables.
+    - imgs[0] (Base Temporal UDVD): Aporta la luminancia y bajas frecuencias termicas estables.
     - imgs[1..N] (Espaciales StructN2V / B2U): Aportan los detalles de alta frecuencia (bordes y texturas).
+    - Aplica soft-thresholding a las altas frecuencias para evitar inyectar ruido residual si umbral_ruido > 0.
     """
     if len(imgs) == 1:
         return imgs[0]
@@ -74,7 +81,10 @@ def fusion_wavelet_multiescala(imgs):
     for i in range(1, len(imgs)):
         f_esp = imgs[i].astype(np.float32)
         blur_esp = cv2.GaussianBlur(f_esp, (7, 7), 1.5)
-        detalles.append(f_esp - blur_esp)
+        hf = f_esp - blur_esp
+        if umbral_ruido > 0:
+            hf = np.sign(hf) * np.maximum(np.abs(hf) - umbral_ruido, 0.0)
+        detalles.append(hf)
 
     # Promediar los detalles espaciales de alta frecuencia
     detalle_combinado = np.mean(detalles, axis=0)
@@ -110,11 +120,11 @@ def actualizar_registro(a, salida_dir, inicio, cantidad):
 
 
 def procesar_un_frame(args):
-    rutas_in, ruta_out, metodo, pesos = args
+    rutas_in, ruta_out, metodo, pesos, umbral_ruido = args
     imgs = [cv2.imread(str(p), cv2.IMREAD_COLOR) for p in rutas_in]
 
     if metodo == "wavelet":
-        out_img = fusion_wavelet_multiescala(imgs)
+        out_img = fusion_wavelet_multiescala(imgs, umbral_ruido=umbral_ruido)
     elif metodo == "mediana":
         stack = np.stack(imgs, axis=0)
         out_img = np.median(stack, axis=0).round().astype(np.uint8)
@@ -149,14 +159,14 @@ def main():
     salida_dir.mkdir(parents=True, exist_ok=True)
 
     # Listar frames comunes
-    listas_frames = [listar(c, a.max_frames) for c in carpetas_entrada]
+    listas_frames = [listar(c, limite=a.max_frames, ultimos=a.ultimos_frames) for c in carpetas_entrada]
     n_frames = min(len(l) for l in listas_frames)
 
     pesos = a.pesos or [1.0 / len(carpetas_entrada)] * len(carpetas_entrada)
     print(f"Ejecutando Ensamble ({a.metodo_fusion}) sobre {len(carpetas_entrada)} modelos ({n_frames} frames)...")
 
     tareas = [
-        ([listas_frames[m][i] for m in range(len(carpetas_entrada))], salida_dir / listas_frames[0][i].name, a.metodo_fusion, pesos)
+        ([listas_frames[m][i] for m in range(len(carpetas_entrada))], salida_dir / listas_frames[0][i].name, a.metodo_fusion, pesos, a.umbral_ruido)
         for i in range(n_frames)
     ]
 
