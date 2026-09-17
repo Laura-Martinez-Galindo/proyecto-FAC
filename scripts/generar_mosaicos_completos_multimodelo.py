@@ -135,21 +135,25 @@ def main():
     ruta_base = RAIZ / "videos" / args.video
     dir_expos = ruta_base / "expos"
 
-    # Definir modelos a contrastar en orden (se muestran solo los que existan en disco)
+    # Definir modelos a contrastar en orden prioritario
     modelos_info = {
-        "original": (ruta_base / "frames_originales", "1. Original Crudo", (0, 140, 255)),
-        "sin_hud": (ruta_base / "frames_sin_hud", "2. Sin HUD ProPainter", (0, 200, 200)),
-        "udvd_t3": (dir_expos / "udvd_t3_ult10min_sin_hud", "3. UDVD T=3 Puro", (255, 160, 50)),
-        "udvd_t5": (dir_expos / "udvd_t5_ult10min_sin_hud", "4. UDVD T=5 Puro", (255, 100, 100)),
-        "udvd_t7": (dir_expos / "udvd_t7_ult10min_sin_hud", "5. UDVD T=7 Puro", (255, 50, 50)),
-        "udvd_destrip_t3": (dir_expos / "udvd_destriping_t3_ult10min_sin_hud", "6. UDVD T=3 Destrip", (255, 220, 0)),
-        "udvd_destrip_t5": (dir_expos / "udvd_destriping_t5_ult10min_sin_hud", "7. UDVD T=5 Destrip", (0, 200, 255)),
-        "udvd_destrip_t7": (dir_expos / "udvd_destriping_t7_ult10min_sin_hud", "8. UDVD T=7 Destrip", (0, 255, 120)),
-        "struct_n2v": (dir_expos / "struct_n2v_vert_ult10min_sin_hud", "9. StructN2V Vert", (200, 100, 255)),
-        "blind2unblind": (dir_expos / "blind2unblind_sin_hud", "10. Blind2Unblind 2D", (255, 150, 200)),
-        "ens_puro": (dir_expos / "ensemble_multitemporal_sin_destrip_t1_t3_t5_t7", "11. Ens. Puro T1357", (255, 120, 200)),
-        "ens_destrip": (dir_expos / "ensemble_multitemporal_con_destrip_t1_t3_t5_t7", "12. Ens. Destrip T1357", (0, 255, 255)),
-        "fusion_adapt": (dir_expos / "fusion_motion_adaptive_udvd_struct_vert", "13. Fusion Adaptativa", (0, 255, 0)),
+        "original": (ruta_base / "frames_originales", "1. Original", (0, 140, 255)),
+        "sin_hud": (ruta_base / "frames_sin_hud", "2. Sin HUD", (0, 200, 200)),
+        "udvd_t5_global": (dir_expos / "udvd_sin_hud", "3. UDVD T=5 Global", (255, 100, 100)),
+        "udvd_t3_puro": (dir_expos / "udvd_t3_ult10min_sin_hud", "4. UDVD T=3 Puro", (255, 160, 50)),
+        "udvd_t5_puro": (dir_expos / "udvd_t5_ult10min_sin_hud", "5. UDVD T=5 Puro", (255, 120, 50)),
+        "udvd_t7_puro": (dir_expos / "udvd_t7_ult10min_sin_hud", "6. UDVD T=7 Puro", (255, 50, 50)),
+        "udvd_destrip_t3": (dir_expos / "udvd_destriping_t3_ult10min_sin_hud", "7. UDVD T=3 Destrip", (255, 220, 0)),
+        "udvd_destrip_t5": (dir_expos / "udvd_destriping_t5_ult10min_sin_hud", "8. UDVD T=5 Destrip", (0, 220, 255)),
+        "udvd_destrip_t7": (dir_expos / "udvd_destriping_t7_ult10min_sin_hud", "9. UDVD T=7 Destrip", (0, 255, 120)),
+        "struct_n2v": (dir_expos / "struct_n2v_vert_ult10min_sin_hud", "10. StructN2V Vert", (200, 100, 255)),
+        "n2v2": (dir_expos / "n2v2_ult10min_sin_hud", "11. N2V2", (180, 80, 220)),
+        "blind2unblind": (dir_expos / "blind2unblind_sin_hud", "12. Blind2Unblind", (255, 150, 200)),
+        "ens_wavelet_t7": (dir_expos / "ensemble_wavelet_udvd_destrip_struct_vert_ult10min", "13. Ens. Wavelet", (100, 255, 200)),
+        "ens_mediana_top3": (dir_expos / "ensemble_mediana_top3_ult10min", "14. Ens. Mediana Top3", (0, 255, 255)),
+        "ens_multiescala_puro": (dir_expos / "ensemble_multitemporal_sin_destrip_t1_t3_t5_t7", "15. Ens. Puro T1357", (255, 120, 200)),
+        "ens_multiescala_destrip": (dir_expos / "ensemble_multitemporal_con_destrip_t1_t3_t5_t7", "16. Ens. Destrip T1357", (0, 255, 200)),
+        "fusion_adapt": (dir_expos / "fusion_motion_adaptive_udvd_struct_vert", "17. Fusion Adaptativa", (0, 255, 0)),
     }
 
     # Filtrar modelos que existan en disco
@@ -157,8 +161,12 @@ def main():
     for k, v in modelos_info.items():
         if v[0].is_dir():
             disponibles[k] = v
-        else:
-            print(f"Aviso: {k} no encontrado en {v[0]}")
+
+    # Auto-descubrir cualquier otra carpeta en expos no listada explícitamente
+    if dir_expos.is_dir():
+        for sub in sorted(dir_expos.iterdir(), key=natural_key):
+            if sub.is_dir() and sub.name not in [v[0].name for v in disponibles.values()]:
+                disponibles[sub.name] = (sub, sub.name[:18], (180, 180, 180))
 
     print(f"=== MODELOS ACTIVOS PARA EL MOSAICO ({len(disponibles)} COLUMNAS) ===")
     for k, v in disponibles.items():
