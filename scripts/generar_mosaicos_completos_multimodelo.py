@@ -70,7 +70,7 @@ def procesar_un_frame(args):
 
 
 def construir_mosaico(lista_frames, modelos_info, titulo_poster, ruta_salida):
-    filas = []
+    filas_mosaico = []
     
     for rank, item in enumerate(lista_frames, start=1):
         paneles_fila = []
