@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
-#SBATCH --time=06:00:00
+#SBATCH --time=7-00:00:00
 #SBATCH --output=jobs/logs/render_videos_%j.out
 #SBATCH --error=jobs/logs/render_videos_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL

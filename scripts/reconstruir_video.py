@@ -89,6 +89,10 @@ def renderizar_video_individual(rutas_frames, ruta_mp4, fps=30.0, titulo=None):
         print(f"Advertencia: No hay frames para renderizar en {ruta_mp4}")
         return
 
+    if ruta_mp4.is_file() and ruta_mp4.stat().st_size > 1024 * 1024:
+        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo render.")
+        return
+
     primero = cv2.imread(str(rutas_frames[0]))
     h, w, _ = primero.shape
     
@@ -108,8 +112,6 @@ def renderizar_video_individual(rutas_frames, ruta_mp4, fps=30.0, titulo=None):
         writer.write(f)
 
     writer.release()
-
-    # Convertir a MP4 H.264 optimizado con FFmpeg si esta disponible
     convertir_h264(temp_avi, ruta_mp4)
 
 
@@ -117,6 +119,10 @@ def renderizar_comparativo_dual(rutas_izq, rutas_der, ruta_mp4, titulo_izq, titu
     """Renderiza video Side-by-Side (1x2) sincronizado."""
     n_frames = min(len(rutas_izq), len(rutas_der))
     if n_frames == 0:
+        return
+
+    if ruta_mp4.is_file() and ruta_mp4.stat().st_size > 1024 * 1024:
+        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo render.")
         return
 
     f_izq = cv2.imread(str(rutas_izq[0]))
@@ -163,6 +169,10 @@ def renderizar_comparativo_2x2(listas_rutas, titulos, ruta_mp4, fps=30.0):
     """
     n_frames = min(len(l) for l in listas_rutas)
     if n_frames == 0 or len(listas_rutas) < 4:
+        return
+
+    if ruta_mp4.is_file() and ruta_mp4.stat().st_size > 1024 * 1024:
+        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo render.")
         return
 
     f0 = cv2.imread(str(listas_rutas[0][0]))
