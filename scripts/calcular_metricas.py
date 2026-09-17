@@ -76,6 +76,7 @@ def obtener_argumentos():
     parser.add_argument("--archivo-resumen", default="resumen.xlsx", help="Nombre del archivo Excel de salida dentro de la carpeta del video (ej. resumen.xlsx o resumen_experimentos.xlsx).")
     parser.add_argument("--max-frames", type=int, help="Limite maximo de frames a evaluar.")
     parser.add_argument("--ultimos-frames", type=int, help="Evaluar exclusivamente los ultimos N frames de la carpeta.")
+    parser.add_argument("--omitir-existentes", action="store_true", help="Omitir evaluacion si el experimento ya existe en el archivo Excel con metricas calculadas.")
     parser.add_argument("--parametros-extra", default="", help="Texto o JSON con detalles de hiperparametros.")
     return parser.parse_args()
 
@@ -558,6 +559,17 @@ def ejecutar(args):
     rutas_frames = listar_frames(carpeta_entrada, max_frames=args.max_frames, ultimos_frames=args.ultimos_frames)
 
     id_exp = args.experimento or f"{modelo_id}_{modo}"
+
+    if args.omitir_existentes and ruta_resumen.is_file():
+        try:
+            libro, hoja = abrir_resumen(ruta_resumen)
+            fila = buscar_fila_registro(hoja, id_exp, nombre_modelo)
+            if fila <= hoja.max_row and hoja.cell(row=fila, column=6).value is not None:
+                print(f"[OMITIDO] El experimento '{id_exp}' ya cuenta con metricas registradas en {ruta_resumen.name} (Fila {fila}).")
+                return
+        except Exception as e:
+            print(f"[Aviso] No se pudo verificar existencia previa en Excel ({e}), procediendo a calcular...")
+
     print(f"Iniciando calculo de metricas para {id_exp}...")
     print(f"Video: {args.video} | Modelo: {nombre_modelo} | Modo: {modo}")
     print(f"Carpeta: {carpeta_entrada}")
