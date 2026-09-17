@@ -92,152 +92,79 @@ def calcular_metricas_hud(img_orig, img_sinhud):
 def crear_diapositiva_16_9(
     img_orig,
     img_sinhud,
-    titulo_principal,
-    subtitulo,
-    sigma_orig,
-    sigma_sinhud,
+    id_video,
+    num_frame,
+    minuto_str,
     metricas_hud,
     ruta_salida
 ):
     """
-    Renderiza un lienzo 1920x1080 (16:9) con diseño moderno, sobrio y elegante
-    listo para insertar directamente como diapositiva en PowerPoint / Keynote.
+    Renderiza un lienzo 1920x1080 (16:9) limpio, minimalista y elegante:
+    - Título centrado arriba: Video X - Frame Y (Minuto Z)
+    - Título encima de cada imagen: 'Original' y 'Sin HUD - Reducción XX.X%'
+    - Dos paneles grandes bien centrados ocupando el espacio visual.
     """
     ANCHO_SLIDE = 1920
     ALTO_SLIDE = 1080
 
-    # Fondo oscuro elegante (#141619 BGR: 25, 22, 20)
+    # Fondo oscuro elegante (#141414 BGR: 20, 20, 20)
     canvas = np.zeros((ALTO_SLIDE, ANCHO_SLIDE, 3), dtype=np.uint8)
-    canvas[:] = (25, 22, 20)
+    canvas[:] = (20, 20, 20)
 
-    # 1. ENCABEZADO SUPERIOR
-    # Barra de acento superior sutil
-    cv2.rectangle(canvas, (0, 0), (ANCHO_SLIDE, 6), (0, 160, 255), -1)
+    # 1. TÍTULO PRINCIPAL CENTRADO
+    nombre_vid = f"Video {id_video.replace('video', '')}"
+    titulo_texto = f"{nombre_vid} - Frame {num_frame:04d} (Minuto {minuto_str})"
+    
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), _ = cv2.getTextSize(titulo_texto, font, 1.25, 2)
+    tx = (ANCHO_SLIDE - tw) // 2
+    cv2.putText(canvas, titulo_texto, (tx, 85), font, 1.25, (255, 255, 255), 2, cv2.LINE_AA)
 
-    # Título Principal (Nombre del Video, Frame, Minuto y Categoría)
-    cv2.putText(
-        canvas,
-        titulo_principal,
-        (60, 65),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.05,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA
-    )
-
-    # Subtítulo explicativo
-    cv2.putText(
-        canvas,
-        subtitulo,
-        (60, 100),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.62,
-        (180, 180, 180),
-        1,
-        cv2.LINE_AA
-    )
-
-    # Línea divisoria superior
-    cv2.line(canvas, (60, 118), (ANCHO_SLIDE - 60, 118), (45, 45, 45), 1)
-
-    # 2. PANELES COMPARATIVOS (IZQUIERDA: ORIGINAL | DERECHA: SIN HUD)
-    # Dimensiones de cada panel de video (4:3 o FLIR standard escalado para caber perfectamente)
+    # 2. CÁLCULO DE DIMENSIONES Y POSICIONAMIENTO DE LOS PANELES
     h_orig, w_orig, _ = img_orig.shape
     aspecto = w_orig / max(1, h_orig)
 
-    # Alto disponible para imagen: 830 px
-    alto_panel = 800
-    ancho_panel = int(alto_panel * aspecto)
+    # Ancho disponible con margen lateral y separación central
+    gap = 50
+    margen_lat = 70
+    ancho_panel = (ANCHO_SLIDE - (2 * margen_lat) - gap) // 2
+    alto_panel = int(ancho_panel / aspecto)
 
-    # Si es muy ancho para que quepan 2 en 1920px (con margen)
-    ancho_max_permitido = (ANCHO_SLIDE - 180) // 2
-    if ancho_panel > ancho_max_permitido:
-        ancho_panel = ancho_max_permitido
-        alto_panel = int(ancho_panel / aspecto)
+    # Si es muy alto para la pantalla (debe caber entre Y=180 y Y=1040)
+    alto_max = 840
+    if alto_panel > alto_max:
+        alto_panel = alto_max
+        ancho_panel = int(alto_panel * aspecto)
 
     p_izq_res = cv2.resize(img_orig, (ancho_panel, alto_panel), interpolation=cv2.INTER_AREA)
     p_der_res = cv2.resize(img_sinhud, (ancho_panel, alto_panel), interpolation=cv2.INTER_AREA)
 
-    # Coordenadas X centradas
-    espacio_total = ANCHO_SLIDE - (2 * ancho_panel)
-    gap = 50
-    x_izq = (espacio_total - gap) // 2
+    # Centrar los dos paneles horizontalmente y verticalmente
+    ancho_total_bloque = (2 * ancho_panel) + gap
+    x_izq = (ANCHO_SLIDE - ancho_total_bloque) // 2
     x_der = x_izq + ancho_panel + gap
-    y_panel = 150
-
-    # Dibujar Panel Izquierdo: ORIGINAL
-    canvas[y_panel : y_panel + alto_panel, x_izq : x_izq + ancho_panel] = p_izq_res
-    # Borde panel izquierdo (Naranja sutil)
-    cv2.rectangle(canvas, (x_izq - 2, y_panel - 2), (x_izq + ancho_panel + 1, y_panel + alto_panel + 1), (0, 130, 240), 2)
-
-    # Badge Panel Izquierdo
-    cv2.rectangle(canvas, (x_izq, y_panel), (x_izq + 280, y_panel + 38), (15, 15, 15), -1)
-    cv2.rectangle(canvas, (x_izq, y_panel), (x_izq + 280, y_panel + 38), (0, 130, 240), 1)
-    cv2.putText(canvas, f"Original (Crudo con HUD)", (x_izq + 15, y_panel + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 1, cv2.LINE_AA)
-
-    # Dibujar Panel Derecho: SIN HUD
-    canvas[y_panel : y_panel + alto_panel, x_der : x_der + ancho_panel] = p_der_res
-    # Borde panel derecho (Verde azulado / Teal)
-    cv2.rectangle(canvas, (x_der - 2, y_panel - 2), (x_der + ancho_panel + 1, y_panel + alto_panel + 1), (0, 210, 160), 2)
-
-    # Badge Superior Derecho con la Métrica Cuantitativa de la Tesis
-    badge_w = 340
-    badge_h = 56
-    bx = ANCHO_SLIDE - badge_w - 60
-    by = 48
-    cv2.rectangle(canvas, (bx, by), (bx + badge_w, by + badge_h), (20, 45, 30), -1)
-    cv2.rectangle(canvas, (bx, by), (bx + badge_w, by + badge_h), (0, 210, 140), 2)
     
-    cv2.putText(
-        canvas,
-        f"Reduccion HUD: {metricas_hud['pct_reduccion']:.1f}%",
-        (bx + 18, by + 25),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (0, 255, 180),
-        2,
-        cv2.LINE_AA
-    )
-    cv2.putText(
-        canvas,
-        f"Meta Propuesta: >80.0% (Alcanzada)",
-        (bx + 18, by + 46),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
-        (200, 255, 220),
-        1,
-        cv2.LINE_AA
-    )
+    y_panel = 175
 
-    # 3. PIE DE PÁGINA CON MÉTRICAS DEL FRAME
-    y_footer = y_panel + alto_panel + 35
-    info_metrica = (
-        f"HUD Original: {metricas_hud['pct_oclusion']:.2f}% ({metricas_hud['n_orig']:,} px) -> "
-        f"Remanente ProPainter: {metricas_hud['pct_remanente']:.3f}% ({metricas_hud['n_sin']:,} px)  |  "
-        f"Sigma Ruido MAD: {sigma_orig:.1f}"
-    )
-    cv2.putText(
-        canvas,
-        info_metrica,
-        (60, y_footer),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.54,
-        (160, 160, 160),
-        1,
-        cv2.LINE_AA
-    )
+    # 3. TÍTULOS ENCIMA DE CADA PANEL (AFUERA DE LA IMAGEN)
+    # Título Izquierdo: "Original"
+    txt_izq = "Original"
+    (ti_w, ti_h), _ = cv2.getTextSize(txt_izq, font, 0.95, 2)
+    t_izq_x = x_izq + (ancho_panel - ti_w) // 2
+    cv2.putText(canvas, txt_izq, (t_izq_x, y_panel - 20), font, 0.95, (255, 255, 255), 2, cv2.LINE_AA)
 
-    cv2.putText(
-        canvas,
-        "Proyecto de Grado Maestria - FAC / UniAndes",
-        (ANCHO_SLIDE - 440, y_footer),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.50,
-        (110, 110, 110),
-        1,
-        cv2.LINE_AA
-    )
+    # Título Derecho: "Sin HUD - Reducción XX.X%"
+    txt_der = f"Sin HUD - Reducción {metricas_hud['pct_reduccion']:.1f}%"
+    (td_w, td_h), _ = cv2.getTextSize(txt_der, font, 0.95, 2)
+    t_der_x = x_der + (ancho_panel - td_w) // 2
+    cv2.putText(canvas, txt_der, (t_der_x, y_panel - 20), font, 0.95, (0, 240, 180), 2, cv2.LINE_AA)
+
+    # 4. DIBUJAR PANELES DE IMAGEN CON BORDE FINO
+    canvas[y_panel : y_panel + alto_panel, x_izq : x_izq + ancho_panel] = p_izq_res
+    cv2.rectangle(canvas, (x_izq - 2, y_panel - 2), (x_izq + ancho_panel + 1, y_panel + alto_panel + 1), (0, 140, 255), 2)
+
+    canvas[y_panel : y_panel + alto_panel, x_der : x_der + ancho_panel] = p_der_res
+    cv2.rectangle(canvas, (x_der - 2, y_panel - 2), (x_der + ancho_panel + 1, y_panel + alto_panel + 1), (0, 220, 150), 2)
 
     ruta_salida.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(ruta_salida), canvas, [cv2.IMWRITE_PNG_COMPRESSION, 3])
@@ -303,15 +230,10 @@ def procesar_video(id_video, dir_orig, dir_sinhud, dir_salida, top_n=5, paso_mue
         
         img_orig = cv2.imread(str(item["p_orig"]))
         img_sinhud = cv2.imread(str(item["p_sinhud"]))
-        
-        s_sin = estimar_sigma_mad(cv2.cvtColor(img_sinhud, cv2.COLOR_BGR2GRAY))
         m_hud = calcular_metricas_hud(img_orig, img_sinhud)
 
-        titulo = f"{nombre_vid_legible} | Frame #{num_frame:05d} (Minuto {t_str}) - Top #{rank} Mayor Ruido"
-        subtitulo = "Comparativa de Remocion de Simbologia HUD (ProPainter Inpainting vs. Video FLIR Original)"
-        
         out_path = dir_salida / f"{id_video}_top{rank:02d}_ruidoso_frame_{num_frame:05d}.png"
-        crear_diapositiva_16_9(img_orig, img_sinhud, titulo, subtitulo, item["sigma"], s_sin, m_hud, out_path)
+        crear_diapositiva_16_9(img_orig, img_sinhud, id_video, num_frame, t_str, m_hud, out_path)
         print(f"  -> Guardada: {out_path.name}")
 
     # Renderizar diapositivas de Top Limpios
@@ -322,15 +244,10 @@ def procesar_video(id_video, dir_orig, dir_sinhud, dir_salida, top_n=5, paso_mue
         
         img_orig = cv2.imread(str(item["p_orig"]))
         img_sinhud = cv2.imread(str(item["p_sinhud"]))
-        
-        s_sin = estimar_sigma_mad(cv2.cvtColor(img_sinhud, cv2.COLOR_BGR2GRAY))
         m_hud = calcular_metricas_hud(img_orig, img_sinhud)
 
-        titulo = f"{nombre_vid_legible} | Frame #{num_frame:05d} (Minuto {t_str}) - Top #{rank} Escena Mas Limpia"
-        subtitulo = "Comparativa de Remocion de Simbologia HUD (ProPainter Inpainting vs. Video FLIR Original)"
-        
         out_path = dir_salida / f"{id_video}_top{rank:02d}_limpio_frame_{num_frame:05d}.png"
-        crear_diapositiva_16_9(img_orig, img_sinhud, titulo, subtitulo, item["sigma"], s_sin, m_hud, out_path)
+        crear_diapositiva_16_9(img_orig, img_sinhud, id_video, num_frame, t_str, m_hud, out_path)
         print(f"  -> Guardada: {out_path.name}")
 
 
