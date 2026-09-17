@@ -128,23 +128,28 @@ def main():
     p = argparse.ArgumentParser(description="Mosaicos Multimodelo Exhaustivos")
     p.add_argument("--video", default="video2")
     p.add_argument("--ultimos-frames", type=int, default=18000)
-    p.add_argument("--paso-muestreo", type=int, default=5)
+    p.add_argument("--paso-muestreo", type=int, default=1, help="Paso de escaneo (1 = analiza los 18,000 frames completos)")
     p.add_argument("--top-n", type=int, default=10)
     args = p.parse_args()
 
     ruta_base = RAIZ / "videos" / args.video
     dir_expos = ruta_base / "expos"
 
-    # Definir los 8 modelos a contrastar en orden
+    # Definir modelos a contrastar en orden (se muestran solo los que existan en disco)
     modelos_info = {
         "original": (ruta_base / "frames_originales", "1. Original Crudo", (0, 140, 255)),
         "sin_hud": (ruta_base / "frames_sin_hud", "2. Sin HUD ProPainter", (0, 200, 200)),
-        "udvd_t5": (dir_expos / "udvd_sin_hud", "3. UDVD T=5 Base", (255, 100, 100)),
-        "udvd_t7": (dir_expos / "udvd_t7_ult10min_sin_hud", "4. UDVD T=7 SinFiltro", (255, 180, 50)),
-        "udvd_destrip": (dir_expos / "udvd_destriping_t7_ult10min_sin_hud", "5. UDVD T=7 Destriping", (0, 255, 120)),
-        "struct_n2v": (dir_expos / "struct_n2v_vert_ult10min_sin_hud", "6. StructN2V Vert", (200, 100, 255)),
-        "blind2unblind": (dir_expos / "blind2unblind_sin_hud", "7. Blind2Unblind 2D", (255, 150, 200)),
-        "ensemble_med": (dir_expos / "ensemble_mediana_top3_ult10min", "8. Ensemble Mediana", (0, 255, 255)),
+        "udvd_t3": (dir_expos / "udvd_t3_ult10min_sin_hud", "3. UDVD T=3 Puro", (255, 160, 50)),
+        "udvd_t5": (dir_expos / "udvd_t5_ult10min_sin_hud", "4. UDVD T=5 Puro", (255, 100, 100)),
+        "udvd_t7": (dir_expos / "udvd_t7_ult10min_sin_hud", "5. UDVD T=7 Puro", (255, 50, 50)),
+        "udvd_destrip_t3": (dir_expos / "udvd_destriping_t3_ult10min_sin_hud", "6. UDVD T=3 Destrip", (255, 220, 0)),
+        "udvd_destrip_t5": (dir_expos / "udvd_destriping_t5_ult10min_sin_hud", "7. UDVD T=5 Destrip", (0, 200, 255)),
+        "udvd_destrip_t7": (dir_expos / "udvd_destriping_t7_ult10min_sin_hud", "8. UDVD T=7 Destrip", (0, 255, 120)),
+        "struct_n2v": (dir_expos / "struct_n2v_vert_ult10min_sin_hud", "9. StructN2V Vert", (200, 100, 255)),
+        "blind2unblind": (dir_expos / "blind2unblind_sin_hud", "10. Blind2Unblind 2D", (255, 150, 200)),
+        "ens_puro": (dir_expos / "ensemble_multitemporal_sin_destrip_t1_t3_t5_t7", "11. Ens. Puro T1357", (255, 120, 200)),
+        "ens_destrip": (dir_expos / "ensemble_multitemporal_con_destrip_t1_t3_t5_t7", "12. Ens. Destrip T1357", (0, 255, 255)),
+        "fusion_adapt": (dir_expos / "fusion_motion_adaptive_udvd_struct_vert", "13. Fusion Adaptativa", (0, 255, 0)),
     }
 
     # Filtrar modelos que existan en disco
