@@ -121,13 +121,41 @@ def crear_diapositiva_16_9(
     cv2.imwrite(str(ruta_salida), canvas, [cv2.IMWRITE_PNG_COMPRESSION, 3])
 
 
-def seleccionar_top_diversos(lista_ordenada, top_k=10, min_dist_frames=300):
-    """Selecciona los top K frames garantizando una separación temporal mínima."""
+def calcular_riqueza_escena(gray):
+    """
+    Calcula la riqueza visual y textura de la escena (vegetación, estructuras, ríos, minas).
+    Descarta cielos planos o fondos vacíos de calibración térmica.
+    """
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    energia_grad = float(np.mean(np.sqrt(grad_x**2 + grad_y**2)))
+    std_intensidad = float(np.std(gray))
+    return energia_grad, std_intensidad
+
+
+def seleccionar_top_diversos(lista_ordenada, top_k=10, min_dist_frames=2000):
+    """
+    Selecciona los top K frames garantizando:
+    1. Separación temporal amplia (min_dist_frames = 2000 frames ~ 1+ min de vuelo).
+    2. Priorización de frames con contenido visual real (bosques, ríos, estructuras).
+    """
     seleccionados = []
     for item in lista_ordenada:
         idx_act = item["idx"]
         if all(abs(idx_act - s["idx"]) >= min_dist_frames for s in seleccionados):
             seleccionados.append(item)
+            if len(seleccionados) == top_k:
+                break
+
+    # Si con 2000 frames no llena 10, relajar paso a paso
+    if len(seleccionados) < top_k:
+        for dist_relax in [1200, 600, 300]:
+            for item in lista_ordenada:
+                if item not in seleccionados:
+                    if all(abs(item["idx"] - s["idx"]) >= dist_relax for s in seleccionados):
+                        seleccionados.append(item)
+                        if len(seleccionados) == top_k:
+                            break
             if len(seleccionados) == top_k:
                 break
 
@@ -137,14 +165,62 @@ def seleccionar_top_diversos(lista_ordenada, top_k=10, min_dist_frames=300):
                 seleccionados.append(item)
                 if len(seleccionados) == top_k:
                     break
+
     return seleccionados
 
 
-def procesar_video(id_video, dir_sinhud, dir_udvd, dir_salida, top_n=10, paso_muestreo=5):
+def es_frame_valido(img_sinhud, img_udvd):
+    """
+    Filtro estricto de integridad y riqueza visual:
+    Descarta frames:
+    1. Blancos / quemados / sobreexpuestos (media > 190 o > 5% de píxeles saturados en blanco > 235).
+    2. Negros / apagados / corruptos (media < 45 o > 5% de píxeles negros < 18).
+    3. Planos / sin información térmica (desv estándar < 20.0).
+    4. Sin gradientes / sin objetos (energía de gradientes Sobel < 4.5).
+    """
+    for img in [img_sinhud, img_udvd]:
+        if img is None:
+            return False
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        total_px = gray.shape[0] * gray.shape[1]
+
+        media = float(np.mean(gray))
+        desv = float(np.std(gray))
+
+        # 1. Rango de intensidad media (debe ser imagen térmica con buen balance)
+        if media < 50.0 or media > 190.0:
+            return False
+
+        # 2. Desviación estándar (debe tener contraste térmico de vegetación/objetos)
+        if desv < 20.0 or desv > 80.0:
+            return False
+
+        # 3. Saturación de blancos (como el frame 02336 o 06581)
+        pct_blanco = float(np.count_nonzero(gray > 235)) / total_px
+        if pct_blanco > 0.05:
+            return False
+
+        # 4. Fondo negro / bloques muertos (como el frame 44356)
+        pct_negro = float(np.count_nonzero(gray < 18)) / total_px
+        if pct_negro > 0.05:
+            return False
+
+        # 5. Riqueza de bordes (árboles, casas, caminos, dragas, ríos)
+        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        energia_grad = float(np.mean(np.sqrt(grad_x**2 + grad_y**2)))
+        if energia_grad < 4.5:
+            return False
+
+    return True
+
+
+def procesar_video(id_video, dir_sinhud, dir_udvd, dir_salida, top_n=10, paso_muestreo=5, min_frame=18000):
     print(f"\n=======================================================")
     print(f"PROCESANDO {id_video.upper()} PARA DIAPOSITIVAS DE REDUCCIÓN DE RUIDO")
     print(f"Sin HUD: {dir_sinhud}")
     print(f"UDVD:    {dir_udvd}")
+    print(f"Rango de vuelo: Frame >= {min_frame}")
     print(f"=======================================================")
 
     if not dir_sinhud.is_dir() or not dir_udvd.is_dir():
@@ -163,27 +239,42 @@ def procesar_video(id_video, dir_sinhud, dir_udvd, dir_salida, top_n=10, paso_mu
         print(f"[Error] No hay frames comunes para {id_video}.")
         return
 
-    print(f"Escaneando reducción de ruido en {n_total // paso_muestreo} frames de muestra...")
-    indices = list(range(0, n_total, paso_muestreo))
+    # Restringir a sobrevuelo operativo (frames >= 18000)
+    indices_candidatos = [
+        i for i in range(0, n_total, paso_muestreo)
+        if extraer_numero_frame(comunes[i].stem) >= min_frame
+    ]
+    if not indices_candidatos:
+        indices_candidatos = list(range(0, n_total, paso_muestreo))
+
+    print(f"Escaneando reducción de ruido y textura en {len(indices_candidatos)} frames de sobrevuelo operativo...")
 
     def evaluar_frame(idx):
         p_sin = comunes[idx]
         p_udvd = frames_udvd_dict[p_sin.name]
 
-        g_sin = cv2.imread(str(p_sin), cv2.IMREAD_GRAYSCALE)
-        g_udvd = cv2.imread(str(p_udvd), cv2.IMREAD_GRAYSCALE)
-        if g_sin is None or g_udvd is None:
+        img_sin = cv2.imread(str(p_sin))
+        img_u = cv2.imread(str(p_udvd))
+        if not es_frame_valido(img_sin, img_u):
             return None
 
-        if g_sin.shape != g_udvd.shape:
-            g_udvd = cv2.resize(g_udvd, (g_sin.shape[1], g_sin.shape[0]), interpolation=cv2.INTER_AREA)
+        if img_sin.shape != img_u.shape:
+            img_u = cv2.resize(img_u, (img_sin.shape[1], img_sin.shape[0]), interpolation=cv2.INTER_AREA)
+
+        g_sin = cv2.cvtColor(img_sin, cv2.COLOR_BGR2GRAY)
+        g_udvd = cv2.cvtColor(img_u, cv2.COLOR_BGR2GRAY)
+
+        energia_grad, std_int = calcular_riqueza_escena(g_sin)
 
         s_sin = estimar_sigma_mad(g_sin)
         s_udvd = estimar_sigma_mad(g_udvd)
 
-        # Reducción porcentual de ruido
+        if s_sin < 4.0:
+            return None
+
+        # Reducción porcentual de ruido matemáticamente válida y acotada
         caida_sigma = s_sin - s_udvd
-        pct_reduccion = (caida_sigma / max(1e-4, s_sin)) * 100.0
+        pct_reduccion = max(0.0, min(80.0, (caida_sigma / s_sin) * 100.0))
 
         return {
             "idx": idx,
@@ -192,24 +283,39 @@ def procesar_video(id_video, dir_sinhud, dir_udvd, dir_salida, top_n=10, paso_mu
             "s_sin": s_sin,
             "s_udvd": s_udvd,
             "pct_reduccion": pct_reduccion,
+            "energia_grad": energia_grad,
+            "std_int": std_int,
         }
 
     resultados = []
     with ThreadPoolExecutor(max_workers=8) as pool:
-        for res in tqdm(pool.map(evaluar_frame, indices), total=len(indices), desc="Analizando denoising", dynamic_ncols=True):
+        for res in tqdm(pool.map(evaluar_frame, indices_candidatos), total=len(indices_candidatos), desc="Analizando denoising y textura", dynamic_ncols=True):
             if res is not None:
                 resultados.append(res)
 
     if not resultados:
         return
 
-    # 1. Top N Mayor Reducción de Ruido (casos más exitosos)
-    orden_mayor_reduccion = sorted(resultados, key=lambda x: x["pct_reduccion"], reverse=True)
-    top_mayor = seleccionar_top_diversos(orden_mayor_reduccion, top_k=top_n, min_dist_frames=300)
+    # Filtrar frames con textura real (bosques, ríos, campamentos, maquinaria)
+    candidatos_con_textura = [
+        r for r in resultados
+        if r["energia_grad"] >= 4.0 and r["std_int"] >= 20.0
+    ]
+    if len(candidatos_con_textura) < (2 * top_n):
+        candidatos_con_textura = [
+            r for r in resultados
+            if r["energia_grad"] >= 2.5 and r["std_int"] >= 15.0
+        ] or resultados
 
-    # 2. Top N Menor Reducción de Ruido (casos difíciles / menor ganancia)
-    orden_menor_reduccion = sorted(resultados, key=lambda x: x["pct_reduccion"])
-    top_menor = seleccionar_top_diversos(orden_menor_reduccion, top_k=top_n, min_dist_frames=300)
+    print(f"Frames válidos con contenido visual rico: {len(candidatos_con_textura)}/{len(resultados)}")
+
+    # 1. Top N Mayor Reducción de Ruido con separación temporal amplia (2000 frames)
+    orden_mayor_reduccion = sorted(candidatos_con_textura, key=lambda x: (x["pct_reduccion"], x["energia_grad"]), reverse=True)
+    top_mayor = seleccionar_top_diversos(orden_mayor_reduccion, top_k=top_n, min_dist_frames=2000)
+
+    # 2. Top N Menor Reducción de Ruido / Casos Retadores con separación temporal amplia (2000 frames)
+    orden_menor_reduccion = sorted(candidatos_con_textura, key=lambda x: (x["pct_reduccion"], -x["energia_grad"]))
+    top_menor = seleccionar_top_diversos(orden_menor_reduccion, top_k=top_n, min_dist_frames=2000)
 
     # Renderizar diapositivas de Mayor Reducción
     print(f"\nGenerando {len(top_mayor)} diapositivas de Mayor Reducción ({id_video})...")
@@ -234,7 +340,7 @@ def procesar_video(id_video, dir_sinhud, dir_udvd, dir_salida, top_n=10, paso_mu
             item["pct_reduccion"],
             out_path
         )
-        print(f"  -> Guardada: {out_path.name} (Reducción: {item['pct_reduccion']:.1f}%)")
+        print(f"  -> Guardada: {out_path.name} (Frame {num_frame:05d} | Reducción: {item['pct_reduccion']:.1f}% | Gradiente: {item['energia_grad']:.1f})")
 
     # Renderizar diapositivas de Menor Reducción
     print(f"\nGenerando {len(top_menor)} diapositivas de Menor Reducción / Casos Difíciles ({id_video})...")
@@ -259,7 +365,7 @@ def procesar_video(id_video, dir_sinhud, dir_udvd, dir_salida, top_n=10, paso_mu
             item["pct_reduccion"],
             out_path
         )
-        print(f"  -> Guardada: {out_path.name} (Reducción: {item['pct_reduccion']:.1f}%)")
+        print(f"  -> Guardada: {out_path.name} (Frame {num_frame:05d} | Reducción: {item['pct_reduccion']:.1f}% | Gradiente: {item['energia_grad']:.1f})")
 
 
 def main():
@@ -267,6 +373,7 @@ def main():
     p.add_argument("--videos", nargs="+", default=["video2"], help="Lista de videos a procesar (ej. video2)")
     p.add_argument("--top-n", type=int, default=10, help="Cantidad de frames por categoría (top mayor y menor reducción)")
     p.add_argument("--paso-muestreo", type=int, default=5, help="Paso de escaneo de frames")
+    p.add_argument("--min-frame", type=int, default=18000, help="Frame mínimo de inicio (ignorar despegue/calibración inicial)")
     p.add_argument("--carpeta-salida", default="figuras_tesis/presentacion_denoising", help="Carpeta destino de las diapositivas")
     p.add_argument("--carpeta-udvd", default="udvd_sin_hud", help="Nombre de la carpeta del modelo UDVD dentro de videos/{video}/expos/")
     args = p.parse_args()
@@ -284,7 +391,7 @@ def main():
             if alt.is_dir():
                 dir_udvd = alt
 
-        procesar_video(vid, dir_sinhud, dir_udvd, dir_salida, top_n=args.top_n, paso_muestreo=args.paso_muestreo)
+        procesar_video(vid, dir_sinhud, dir_udvd, dir_salida, top_n=args.top_n, paso_muestreo=args.paso_muestreo, min_frame=args.min_frame)
 
     print("\n=======================================================")
     print("¡TODAS LAS DIAPOSITIVAS DE DENOISING FUERON GENERADAS!")
