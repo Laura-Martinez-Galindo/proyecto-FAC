@@ -54,7 +54,11 @@ def detectar_pixeles_hud(img_bgr, mask_roi=None):
     mask_rojo1 = cv2.inRange(hsv, np.array([0, 50, 50]), np.array([15, 255, 255]))
     mask_rojo2 = cv2.inRange(hsv, np.array([165, 50, 50]), np.array([180, 255, 255]))
     hud_detected = mask_verde | mask_rojo1 | mask_rojo2
+
     if mask_roi is not None:
+        h, w = img_bgr.shape[:2]
+        if mask_roi.shape[:2] != (h, w):
+            mask_roi = cv2.resize(mask_roi, (w, h), interpolation=cv2.INTER_NEAREST)
         hud_detected = hud_detected & (mask_roi > 0)
     return hud_detected
 
@@ -76,6 +80,9 @@ def calcular_metricas_hud(img_orig, img_sinhud, path_mascara=None):
     n_sin = int(np.count_nonzero(m_sin))
 
     if mask_roi is not None:
+        h, w = img_orig.shape[:2]
+        if mask_roi.shape[:2] != (h, w):
+            mask_roi = cv2.resize(mask_roi, (w, h), interpolation=cv2.INTER_NEAREST)
         total_hud_px = int(np.count_nonzero(mask_roi))
         if total_hud_px > 0 and n_orig == 0:
             n_orig = total_hud_px
@@ -173,7 +180,7 @@ def crear_diapositiva_16_9(
     cv2.imwrite(str(ruta_salida), canvas, [cv2.IMWRITE_PNG_COMPRESSION, 3])
 
 
-def seleccionar_top_diversos(lista_ordenada, top_k=5, min_dist_frames=300):
+def seleccionar_top_diversos(lista_ordenada, top_k=10, min_dist_frames=300):
     """Selecciona los top K frames garantizando una separación temporal mínima."""
     seleccionados = []
     for item in lista_ordenada:
@@ -193,9 +200,9 @@ def seleccionar_top_diversos(lista_ordenada, top_k=5, min_dist_frames=300):
     return seleccionados
 
 
-def procesar_video(id_video, dir_orig, dir_sinhud, dir_mascaras, dir_salida, top_n=5, paso_muestreo=5):
+def procesar_video(id_video, dir_orig, dir_sinhud, dir_mascaras, dir_salida, top_n=10, paso_muestreo=5):
     print(f"\n=======================================================")
-    print(f"PROCESANDO {id_video.upper()} PARA DIAPOSITIVAS DE PRESENTACIÓN")
+    print(f"PROCESANDO {id_video.upper()} PARA DIAPOSITIVAS DE LIMPIEZA DE HUD")
     print(f"Original: {dir_orig}")
     print(f"Sin HUD:  {dir_sinhud}")
     print(f"Máscaras: {dir_mascaras}")
@@ -217,75 +224,80 @@ def procesar_video(id_video, dir_orig, dir_sinhud, dir_mascaras, dir_salida, top
         print(f"[Error] No hay frames comunes para {id_video}.")
         return
 
-    # Escanear nivel de ruido para clasificar los top sucios y top limpios
-    print(f"Escaneando nivel de ruido en {n_total // paso_muestreo} frames de muestra...")
+    # Escanear reducción de HUD para clasificar top mayor reducción y top menor reducción
+    print(f"Escaneando remoción de HUD en {n_total // paso_muestreo} frames de muestra...")
     indices = list(range(0, n_total, paso_muestreo))
 
     def evaluar_frame(idx):
         p_orig = comunes[idx]
-        img = cv2.imread(str(p_orig), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            return None
-        s = estimar_sigma_mad(img)
+        p_sin = frames_sinhud_dict[p_orig.name]
         p_mask = dir_mascaras / p_orig.name if dir_mascaras.is_dir() else None
+
+        img_orig = cv2.imread(str(p_orig))
+        img_sinhud = cv2.imread(str(p_sin))
+        if img_orig is None or img_sinhud is None:
+            return None
+
+        m_hud = calcular_metricas_hud(img_orig, img_sinhud, path_mascara=p_mask)
         return {
             "idx": idx,
             "p_orig": p_orig,
-            "p_sinhud": frames_sinhud_dict[p_orig.name],
+            "p_sinhud": p_sin,
             "p_mask": p_mask,
-            "sigma": s
+            "m_hud": m_hud,
+            "pct_reduccion": m_hud["pct_reduccion"],
+            "n_orig": m_hud["n_orig"],
+            "n_sin": m_hud["n_sin"],
         }
 
     resultados = []
     with ThreadPoolExecutor(max_workers=8) as pool:
-        for res in tqdm(pool.map(evaluar_frame, indices), total=len(indices), desc="Analizando ruido", dynamic_ncols=True):
+        for res in tqdm(pool.map(evaluar_frame, indices), total=len(indices), desc="Analizando remocion HUD", dynamic_ncols=True):
             if res is not None:
                 resultados.append(res)
 
     if not resultados:
         return
 
-    # 1. Top N Más Sucios / Ruidosos con separación temporal
-    orden_ruidosos = sorted(resultados, key=lambda x: x["sigma"], reverse=True)
-    top_ruidosos = seleccionar_top_diversos(orden_ruidosos, top_k=top_n, min_dist_frames=300)
+    # 1. Top N Mayor Reducción de HUD con separación temporal (priorizando frames con contenido HUD real)
+    orden_mayor = sorted([r for r in resultados if r["n_orig"] > 50] or resultados, key=lambda x: (x["pct_reduccion"], x["n_orig"]), reverse=True)
+    top_mayor = seleccionar_top_diversos(orden_mayor, top_k=top_n, min_dist_frames=300)
 
-    # 2. Top N Más Limpios con separación temporal
-    orden_limpios = sorted(resultados, key=lambda x: x["sigma"])
-    top_limpios = seleccionar_top_diversos(orden_limpios, top_k=top_n, min_dist_frames=300)
+    # 2. Top N Menor Reducción de HUD / Casos Difíciles con separación temporal
+    orden_menor = sorted(resultados, key=lambda x: (x["pct_reduccion"], -x["n_sin"]))
+    top_menor = seleccionar_top_diversos(orden_menor, top_k=top_n, min_dist_frames=300)
 
-    # Renderizar diapositivas de Top Ruidosos
-    print(f"\nGenerando {len(top_ruidosos)} diapositivas de Casos Ruidosos ({id_video})...")
-    for rank, item in enumerate(top_ruidosos, start=1):
+    # Renderizar diapositivas de Mayor Reducción
+    print(f"\nGenerando {len(top_mayor)} diapositivas de Mayor Reducción de HUD ({id_video})...")
+    for rank, item in enumerate(top_mayor, start=1):
         num_frame = extraer_numero_frame(item["p_orig"].stem)
         t_str = formatear_tiempo(num_frame)
         
         img_orig = cv2.imread(str(item["p_orig"]))
         img_sinhud = cv2.imread(str(item["p_sinhud"]))
-        m_hud = calcular_metricas_hud(img_orig, img_sinhud, path_mascara=item["p_mask"])
 
-        out_path = dir_salida / f"{id_video}_top{rank:02d}_ruidoso_frame_{num_frame:05d}.png"
-        crear_diapositiva_16_9(img_orig, img_sinhud, id_video, num_frame, t_str, m_hud, out_path)
-        print(f"  -> Guardada: {out_path.name}")
+        out_path = dir_salida / f"{id_video}_top{rank:02d}_mayor_reduccion_frame_{num_frame:05d}.png"
+        crear_diapositiva_16_9(img_orig, img_sinhud, id_video, num_frame, t_str, item["m_hud"], out_path)
+        print(f"  -> Guardada: {out_path.name} (Reducción: {item['pct_reduccion']:.1f}%)")
 
-    # Renderizar diapositivas de Top Limpios
-    print(f"\nGenerando {len(top_limpios)} diapositivas de Casos Limpios ({id_video})...")
-    for rank, item in enumerate(top_limpios, start=1):
+    # Renderizar diapositivas de Menor Reducción
+    print(f"\nGenerando {len(top_menor)} diapositivas de Menor Reducción / Casos Difíciles ({id_video})...")
+    for rank, item in enumerate(top_menor, start=1):
         num_frame = extraer_numero_frame(item["p_orig"].stem)
         t_str = formatear_tiempo(num_frame)
         
         img_orig = cv2.imread(str(item["p_orig"]))
         img_sinhud = cv2.imread(str(item["p_sinhud"]))
-        m_hud = calcular_metricas_hud(img_orig, img_sinhud, path_mascara=item["p_mask"])
 
-        out_path = dir_salida / f"{id_video}_top{rank:02d}_limpio_frame_{num_frame:05d}.png"
-        crear_diapositiva_16_9(img_orig, img_sinhud, id_video, num_frame, t_str, m_hud, out_path)
-        print(f"  -> Guardada: {out_path.name}")
+        out_path = dir_salida / f"{id_video}_top{rank:02d}_menor_reduccion_frame_{num_frame:05d}.png"
+        crear_diapositiva_16_9(img_orig, img_sinhud, id_video, num_frame, t_str, item["m_hud"], out_path)
+        print(f"  -> Guardada: {out_path.name} (Reducción: {item['pct_reduccion']:.1f}%)")
 
 
 def main():
     p = argparse.ArgumentParser(description="Generar Diapositivas 16:9 de Limpieza de HUD")
-    p.add_argument("--videos", nargs="+", default=["video1", "video2"], help="Lista de videos a procesar (ej. video1 video2)")
-    p.add_argument("--top-n", type=int, default=5, help="Cantidad de frames por categoria (top limpios y top ruidosos)")
+    p.add_argument("--videos", nargs="+", default=["video2"], help="Lista de videos a procesar (ej. video2)")
+    p.add_argument("--top-n", type=int, default=10, help="Cantidad de frames por categoria (top mayor y menor reduccion)")
     p.add_argument("--paso-muestreo", type=int, default=5, help="Paso de escaneo de frames")
     p.add_argument("--carpeta-salida", default="figuras_tesis/presentacion_hud", help="Carpeta destino de las imagenes")
     args = p.parse_args()
