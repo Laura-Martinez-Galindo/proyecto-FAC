@@ -128,7 +128,7 @@ def main():
     p = argparse.ArgumentParser(description="Mosaicos Multimodelo Exhaustivos")
     p.add_argument("--video", default="video2")
     p.add_argument("--ultimos-frames", type=int, default=18000)
-    p.add_argument("--paso-muestreo", type=int, default=1, help="Paso de escaneo (1 = analiza los 18,000 frames completos)")
+    p.add_argument("--paso-muestreo", type=int, default=5, help="Paso de escaneo (5 = escanea 3,600 frames representativos)")
     p.add_argument("--top-n", type=int, default=10)
     args = p.parse_args()
 

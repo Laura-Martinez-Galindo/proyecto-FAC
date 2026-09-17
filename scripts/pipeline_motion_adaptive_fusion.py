@@ -77,6 +77,13 @@ def procesar_un_frame(args):
 
     # Fusión adaptativa
     fusion = (1.0 - M) * img_udvd.astype(np.float32) + M * img_struct.astype(np.float32)
+    
+    # Neutralizar artefactos de padding convolucional en los 5px de los bordes externos
+    fusion[:, :5] = img_udvd[:, :5]
+    fusion[:, -5:] = img_udvd[:, -5:]
+    fusion[:5, :] = img_udvd[:5, :]
+    fusion[-5:, :] = img_udvd[-5:, :]
+    
     fusion_uint8 = np.clip(fusion, 0.0, 255.0).round().astype(np.uint8)
 
     cv2.imwrite(str(ruta_salida), fusion_uint8, [cv2.IMWRITE_PNG_COMPRESSION, 3])
