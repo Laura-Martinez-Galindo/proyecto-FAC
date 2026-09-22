@@ -11,7 +11,7 @@
 #SBATCH --error=jobs/logs/ruido_mosaicos_v2_%j.err
 
 set -euo pipefail
-mkdir -p jobs/logs figuras_tesis/mosaicos_ruido_video2 csv_logs
+mkdir -p jobs/logs figuras_tesis/linea_tiempo/mosaicos_ruido_video2 videos/video2/ruido_residual
 
 echo "=========================================================="
 echo "Extracción de Ruido, Mosaicos y Línea de Tiempo - Video 2"
@@ -27,10 +27,10 @@ python scripts/extraer_ruido_y_mosaicos.py \
     --carpeta-original videos/video2/frames_sin_hud \
     --carpeta-denoised videos/video2/expos/ensemble_wavelet_triple_sinhud \
     --modelo-nombre "Ensemble_Wavelet_Triple" \
-    --salida-ruido videos/video2/ruido_residual_jorge \
-    --salida-mosaicos figuras_tesis/mosaicos_ruido_video2 \
-    --salida-grafica figuras_tesis/linea_tiempo_ruido_video2.png \
-    --salida-csv csv_logs/ritmo_temporal_video2.csv
+    --salida-ruido videos/video2/ruido_residual \
+    --salida-mosaicos figuras_tesis/linea_tiempo/mosaicos_ruido_video2 \
+    --salida-grafica figuras_tesis/linea_tiempo/linea_tiempo_ruido_video2.png \
+    --salida-csv videos/video2/ritmo_temporal_video2.csv
 
 echo "=========================================================="
 echo "Extracción completada exitosamente: $(date)"
