@@ -69,13 +69,15 @@ def calcular_metricas_hud(img_orig, img_sinhud, path_mascara=None):
     1. Evalúa la supresión de bordes de alta frecuencia del texto sintético dentro de la máscara HUD.
     2. Evalúa la eliminación de píxeles con coloración artificial de simbología militar.
     """
+    h, w = img_orig.shape[:2]
+    if img_sinhud.shape[:2] != (h, w):
+        img_sinhud = cv2.resize(img_sinhud, (w, h), interpolation=cv2.INTER_AREA)
+
     mask_roi = None
     if path_mascara is not None and path_mascara.exists():
         mask_roi = cv2.imread(str(path_mascara), cv2.IMREAD_GRAYSCALE)
-        if mask_roi is not None:
-            h, w = img_orig.shape[:2]
-            if mask_roi.shape[:2] != (h, w):
-                mask_roi = cv2.resize(mask_roi, (w, h), interpolation=cv2.INTER_NEAREST)
+        if mask_roi is not None and mask_roi.shape[:2] != (h, w):
+            mask_roi = cv2.resize(mask_roi, (w, h), interpolation=cv2.INTER_NEAREST)
 
     m_orig = detectar_pixeles_hud(img_orig, mask_roi)
     m_sin = detectar_pixeles_hud(img_sinhud, mask_roi)
@@ -337,6 +339,12 @@ def procesar_video(id_video, dir_orig, dir_sinhud, dir_mascaras, dir_salida, top
 
         img_orig = cv2.imread(str(p_orig))
         img_sinhud = cv2.imread(str(p_sin))
+        if img_orig is None or img_sinhud is None:
+            return None
+
+        if img_sinhud.shape[:2] != img_orig.shape[:2]:
+            img_sinhud = cv2.resize(img_sinhud, (img_orig.shape[1], img_orig.shape[0]), interpolation=cv2.INTER_AREA)
+
         if not es_frame_valido(img_orig, img_sinhud):
             return None
 
@@ -402,6 +410,8 @@ def procesar_video(id_video, dir_orig, dir_sinhud, dir_mascaras, dir_salida, top
 
         img_orig = cv2.imread(str(item["p_orig"]))
         img_sinhud = cv2.imread(str(item["p_sinhud"]))
+        if img_sinhud.shape[:2] != img_orig.shape[:2]:
+            img_sinhud = cv2.resize(img_sinhud, (img_orig.shape[1], img_orig.shape[0]), interpolation=cv2.INTER_AREA)
 
         out_path = dir_salida / f"{id_video}_top{rank:02d}_mayor_reduccion_frame_{num_frame:05d}.png"
         crear_diapositiva_16_9(img_orig, img_sinhud, id_video, num_frame, t_str, item["m_hud"], out_path)
@@ -415,6 +425,8 @@ def procesar_video(id_video, dir_orig, dir_sinhud, dir_mascaras, dir_salida, top
 
         img_orig = cv2.imread(str(item["p_orig"]))
         img_sinhud = cv2.imread(str(item["p_sinhud"]))
+        if img_sinhud.shape[:2] != img_orig.shape[:2]:
+            img_sinhud = cv2.resize(img_sinhud, (img_orig.shape[1], img_orig.shape[0]), interpolation=cv2.INTER_AREA)
 
         out_path = dir_salida / f"{id_video}_top{rank:02d}_menor_reduccion_frame_{num_frame:05d}.png"
         crear_diapositiva_16_9(img_orig, img_sinhud, id_video, num_frame, t_str, item["m_hud"], out_path)

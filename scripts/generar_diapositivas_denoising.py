@@ -255,11 +255,14 @@ def procesar_video(id_video, dir_sinhud, dir_udvd, dir_salida, top_n=10, paso_mu
 
         img_sin = cv2.imread(str(p_sin))
         img_u = cv2.imread(str(p_udvd))
-        if not es_frame_valido(img_sin, img_u):
+        if img_sin is None or img_u is None:
             return None
 
-        if img_sin.shape != img_u.shape:
+        if img_u.shape[:2] != img_sin.shape[:2]:
             img_u = cv2.resize(img_u, (img_sin.shape[1], img_sin.shape[0]), interpolation=cv2.INTER_AREA)
+
+        if not es_frame_valido(img_sin, img_u):
+            return None
 
         g_sin = cv2.cvtColor(img_sin, cv2.COLOR_BGR2GRAY)
         g_udvd = cv2.cvtColor(img_u, cv2.COLOR_BGR2GRAY)

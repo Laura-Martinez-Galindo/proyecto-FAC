@@ -71,11 +71,23 @@ class DynamicKernelPredictor(nn.Module):
             nn.Conv2d(base_ch, out_kernels, 3, padding=1),
         )
 
-    def forward(self, x_stack):
+    def forward(self, x_stack, blind_spot=True):
         # x_stack: (B, T*C, H, W)
         b, tc, h, w = x_stack.shape
-        kernels = self.net(x_stack)  # (B, T * K*K, H, W)
-        kernels = torch.softmax(kernels.view(b, self.num_frames * self.kernel_size * self.kernel_size, h, w), dim=1)
+        raw_kernels = self.net(x_stack)  # (B, T * K*K, H, W)
+
+        if blind_spot:
+            # Blind-Spot: Enmascarar el pixel central del frame central (t_center, k_center)
+            # para evitar que la red aprenda la identidad o copie el ruido del frame actual
+            t_center = self.num_frames // 2
+            k_center = (self.kernel_size * self.kernel_size) // 2
+            idx_centro = t_center * (self.kernel_size * self.kernel_size) + k_center
+            # Colocar logit en -infinito antes del softmax (peso = 0.0)
+            mascara = torch.ones_like(raw_kernels)
+            mascara[:, idx_centro : idx_centro + 1, :, :] = 0.0
+            raw_kernels = raw_kernels.masked_fill(mascara == 0.0, -1e9)
+
+        kernels = torch.softmax(raw_kernels, dim=1)  # (B, T * K*K, H, W)
 
         # Aplicar filtrado dinamico mediante unfold
         pad = self.kernel_size // 2
@@ -262,12 +274,11 @@ def entrenar(a, r, rutas_frames, dispositivo):
             center = center.to(dispositivo, non_blocking=True)
 
             optimizador.zero_grad()
-            denoised = modelo(stack)
+            denoised = modelo(stack, blind_spot=True)
 
-            # Consistencia temporal multi-frame
-            b, _, ph, pw = stack.shape
-            media_temp = stack.view(b, a.num_frames, 3, ph, pw).mean(dim=1)
-            loss = criterio_l1(denoised, media_temp)
+            # Perdida Autosupervisada Blind-Spot:
+            # La red estima el frame central a partir de vecinos espacio-temporales sin ver el pixel central ruidoso
+            loss = criterio_l1(denoised, center)
 
             loss.backward()
             optimizador.step()
