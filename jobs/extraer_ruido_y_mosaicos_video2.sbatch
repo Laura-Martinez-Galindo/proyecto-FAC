@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=ruido_mosaicos_v2
-#SBATCH --partition=gpu
+#SBATCH --partition=medium
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=14
-#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=02:00:00
+#SBATCH --time=01:30:00
 #SBATCH --output=jobs/logs/ruido_mosaicos_v2_%j.out
 #SBATCH --error=jobs/logs/ruido_mosaicos_v2_%j.err
 

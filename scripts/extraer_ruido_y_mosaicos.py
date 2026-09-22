@@ -33,19 +33,20 @@ def natural_key(p):
 
 
 def estimar_sigma_mad(gray):
-    """Estima sigma de ruido con el estimador robusto MAD sobre el Laplaciano."""
-    lap = cv2.Laplacian(gray.astype(np.float64), cv2.CV_64F)
+    """Estima sigma de ruido con el estimador robusto MAD sobre el Laplaciano en float32."""
+    lap = cv2.Laplacian(gray, cv2.CV_32F)
     med = np.median(lap)
     mad = np.median(np.abs(lap - med))
     return float(mad / 0.6745)
 
 
 def calcular_densidad_estructural(gray):
-    """Calcula la energía de bordes por Sobel y la varianza del Laplaciano."""
-    gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    energia_sobel = float(np.mean(np.sqrt(gx**2 + gy**2)))
-    var_lap = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    """Calcula la energía de bordes por Sobel y la varianza del Laplaciano en float32."""
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+    energia_sobel = float(np.mean(mag))
+    var_lap = float(cv2.Laplacian(gray, cv2.CV_32F).var())
     return energia_sobel, var_lap
 
 
@@ -206,7 +207,6 @@ def main():
     dir_mosaicos.mkdir(parents=True, exist_ok=True)
 
     registros = []
-    frames_datos_cache = {}
 
     for idx, f_orig in enumerate(archivos_orig):
         nombre = f_orig.name
@@ -256,15 +256,7 @@ def main():
         }
         registros.append(item)
 
-        # Guardar en memoria para selección de mosaicos
-        frames_datos_cache[nombre] = {
-            "img_orig": img_orig,
-            "img_clean": img_clean,
-            "residuo_float": residuo_float,
-            "item": item,
-        }
-
-        if (idx + 1) % 500 == 0 or (idx + 1) == len(archivos_orig):
+        if (idx + 1) % 1000 == 0 or (idx + 1) == len(archivos_orig):
             print(f"Progreso: {idx + 1}/{len(archivos_orig)} cuadros analizados...")
 
     df = pd.DataFrame(registros)
@@ -293,33 +285,34 @@ def main():
     top5_alto_ruido = df_estructuras.sort_values(by="sigma_orig", ascending=False).head(5)
     top5_bajo_ruido = df_estructuras.sort_values(by="sigma_orig", ascending=True).head(5)
 
-    print("\n--- GENERANDO MOSAICOS DE ALTO RUIDO CON ESTRUCTURAS ---")
-    for pos, (_, fila) in enumerate(top5_alto_ruido.iterrows(), 1):
+    def procesar_mosaico_desde_disco(fila, prefijo_tipo, pos):
         nombre = fila["nombre_archivo"]
-        datos = frames_datos_cache[nombre]
-        ruido_color, _ = normalizar_ruido_para_visualizacion(datos["residuo_float"], factor_amplificacion=3.5)
+        p_orig = dir_orig / nombre
+        p_clean = archivos_clean_map[nombre]
+        img_orig_bgr = cv2.imread(str(p_orig))
+        img_clean_bgr = cv2.imread(str(p_clean))
+        
+        orig_gray = cv2.cvtColor(img_orig_bgr, cv2.COLOR_BGR2GRAY)
+        clean_gray = cv2.cvtColor(img_clean_bgr, cv2.COLOR_BGR2GRAY)
+        residuo = orig_gray.astype(np.float32) - clean_gray.astype(np.float32)
+        
+        ruido_color, _ = normalizar_ruido_para_visualizacion(residuo, factor_amplificacion=3.5)
         
         info = fila.to_dict()
         info["modelo"] = args.modelo_nombre
-        mosaico = crear_mosaico_triptico(datos["img_orig"], datos["img_clean"], ruido_color, info)
+        mosaico = crear_mosaico_triptico(img_orig_bgr, img_clean_bgr, ruido_color, info)
         
-        ruta_out = dir_mosaicos / f"mosaico_alto_ruido_pos{pos}_{nombre}"
+        ruta_out = dir_mosaicos / f"mosaico_{prefijo_tipo}_pos{pos}_{nombre}"
         cv2.imwrite(str(ruta_out), mosaico, [cv2.IMWRITE_PNG_COMPRESSION, 2])
-        print(f"  [Alto Ruido {pos}] Frame #{fila['frame_idx']} (σ={fila['sigma_orig']:.2f}, Sobel={fila['sobel_energia']:.1f}) -> {ruta_out.name}")
+        print(f"  [{prefijo_tipo.replace('_', ' ').title()} {pos}] Frame #{fila['frame_idx']} (σ={fila['sigma_orig']:.2f}, Sobel={fila['sobel_energia']:.1f}) -> {ruta_out.name}")
+
+    print("\n--- GENERANDO MOSAICOS DE ALTO RUIDO CON ESTRUCTURAS ---")
+    for pos, (_, fila) in enumerate(top5_alto_ruido.iterrows(), 1):
+        procesar_mosaico_desde_disco(fila, "alto_ruido", pos)
 
     print("\n--- GENERANDO MOSAICOS DE BAJO RUIDO CON ESTRUCTURAS ---")
     for pos, (_, fila) in enumerate(top5_bajo_ruido.iterrows(), 1):
-        nombre = fila["nombre_archivo"]
-        datos = frames_datos_cache[nombre]
-        ruido_color, _ = normalizar_ruido_para_visualizacion(datos["residuo_float"], factor_amplificacion=3.5)
-        
-        info = fila.to_dict()
-        info["modelo"] = args.modelo_nombre
-        mosaico = crear_mosaico_triptico(datos["img_orig"], datos["img_clean"], ruido_color, info)
-        
-        ruta_out = dir_mosaicos / f"mosaico_bajo_ruido_pos{pos}_{nombre}"
-        cv2.imwrite(str(ruta_out), mosaico, [cv2.IMWRITE_PNG_COMPRESSION, 2])
-        print(f"  [Bajo Ruido {pos}] Frame #{fila['frame_idx']} (σ={fila['sigma_orig']:.2f}, Sobel={fila['sobel_energia']:.1f}) -> {ruta_out.name}")
+        procesar_mosaico_desde_disco(fila, "bajo_ruido", pos)
 
     print("=" * 85)
     print(f"PROCESO COMPLETADO EXITOSAMENTE.")
