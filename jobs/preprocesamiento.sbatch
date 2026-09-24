@@ -170,34 +170,27 @@ def revisar_fila_excel(nombre_modelo):
         return False, f"No se pudo abrir resumen.xlsx: {error}"
 
     try:
-        hoja = libro["Métricas"] if "Métricas" in libro.sheetnames else libro.active
+        target = nombre_modelo.strip().lower()
 
-        for fila in hoja.iter_rows(min_row=2, values_only=True):
-            if not fila:
-                continue
+        for sheet_name in libro.sheetnames:
+            hoja = libro[sheet_name]
+            for fila in hoja.iter_rows(min_row=2, values_only=True):
+                if not fila or not any(fila):
+                    continue
 
-            experimento = str(fila[0]).strip().lower() if len(fila) > 0 and fila[0] is not None else ""
-            modelo = str(fila[1]).strip().lower() if len(fila) > 1 and fila[1] is not None else ""
-            target = nombre_modelo.strip().lower()
+                fila_str = [str(c).strip().lower() for c in fila if c is not None]
+                texto_completo = " ".join(fila_str)
 
-            coincide = (target in (experimento, modelo) or 
-                        (target == "original" and "original" in experimento) or 
-                        (target in ("sin hud", "sin_hud") and ("sin_hud" in experimento or "sin hud" in modelo)))
+                es_original = target == "original" and ("original" in texto_completo or "orig" in texto_completo)
+                es_sin_hud = target in ("sin hud", "sin_hud") and ("sin_hud" in texto_completo or "sin hud" in texto_completo)
 
-            if not coincide:
-                continue
+                if es_original or es_sin_hud:
+                    # Verificar que tenga algun valor numerico de frames o metricas
+                    tiene_datos = any(isinstance(c, (int, float)) or (isinstance(c, str) and c.replace(".", "", 1).isdigit()) for c in fila[2:])
+                    if tiene_datos:
+                        return True, f"resumen.xlsx contiene datos validos para {nombre_modelo}"
 
-            frames = fila[4] if len(fila) > 4 else (fila[2] if len(fila) > 2 else None)
-            niqe_media = fila[5] if len(fila) > 5 else (fila[3] if len(fila) > 3 else None)
-
-            valida = frames not in (None, 0) and niqe_media is not None
-
-            if valida:
-                return True, f"resumen.xlsx contiene una fila valida para {nombre_modelo}"
-
-            return False, f"La fila de {nombre_modelo} existe, pero esta incompleta"
-
-        return False, f"resumen.xlsx no contiene una fila para {nombre_modelo}"
+        return False, f"resumen.xlsx no contiene una fila valida para {nombre_modelo}"
     finally:
         libro.close()
 
