@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """
-Pipeline Completo de Restauración para el Dataset Elegido de la Tesis (Blindado contra OOM):
+Pipeline Completo de Restauración para el Dataset Elegido de la Tesis (Blindado y Ultra-Robusto):
 Aplica la cadena metodológica completa sobre las imágenes de Train, Val y Test:
 1. Rama 1: Original (Cruda con HUD y Ruido).
-2. Rama 2: Sin HUD (Inpainting morfológico fino de telemetría y HUD verde/rojo según segmentar_hud.py).
+2. Rama 2: Sin HUD (Inpainting morfológico fino de telemetría y HUD verde/rojo).
 3. Rama 3: Denoised UDVD Estándar (Dynamic Kernels 5x5, T=5).
 4. Rama 4: Denoised UDVD Mejorado (Dynamic Kernels + Destriping Columnar Anti-FPN).
 5. Generación automática de dataset.yaml para cada rama.
-
-Diseño Blindado de Memoria:
-- Carga checkpoints en CPU primero y transfiere a GPU limpiamente.
-- Inferencia frame-a-frame (batch=1) con consumo pico de VRAM < 1.5 GB.
-- Liberación inmediata de memoria CUDA y guardado asíncrono en disco con 8 hilos.
 """
 
 import argparse
@@ -37,7 +32,6 @@ def extraer_mascara_hud(bgr):
     mask_verde = cv2.inRange(hsv, np.array([35, 60, 60], dtype=np.uint8), np.array([95, 255, 255], dtype=np.uint8))
     mask_rojo1 = cv2.inRange(hsv, np.array([0, 60, 60], dtype=np.uint8), np.array([15, 255, 255], dtype=np.uint8))
     mask_rojo2 = cv2.inRange(hsv, np.array([165, 60, 60], dtype=np.uint8), np.array([179, 255, 255], dtype=np.uint8))
-    
     mask = mask_verde | mask_rojo1 | mask_rojo2
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.dilate(mask, kernel, iterations=1)
@@ -105,6 +99,32 @@ class DynamicKernelPredictor(nn.Module):
         return filtered
 
 
+def seleccionar_mejor_dispositivo(pref_device="cuda"):
+    if not torch.cuda.is_available() or pref_device == "cpu":
+        return torch.device("cpu")
+    
+    # Buscar la GPU con más memoria libre
+    n_gpus = torch.cuda.device_count()
+    mejor_idx = 0
+    max_libre = 0
+    
+    for i in range(n_gpus):
+        try:
+            libre, total = torch.cuda.mem_get_info(i)
+            print(f"  * GPU {i} ({torch.cuda.get_device_name(i)}): {libre / (1024**3):.2f} GB libres de {total / (1024**3):.2f} GB")
+            if libre > max_libre:
+                max_libre = libre
+                mejor_idx = i
+        except Exception:
+            pass
+
+    dispositivo = torch.device(f"cuda:{mejor_idx}")
+    print(f"[+] Dispositivo seleccionado: {dispositivo} ({max_libre / (1024**3):.2f} GB libres)\n")
+    torch.cuda.empty_cache()
+    gc.collect()
+    return dispositivo
+
+
 def cargar_modelo_udvd(dispositivo):
     modelo = DynamicKernelPredictor(num_frames=5, in_channels=3, kernel_size=5, base_ch=32)
     ckpt_path = RAIZ / "cache/denoising/video2/udvd/modelo.pth"
@@ -115,6 +135,7 @@ def cargar_modelo_udvd(dispositivo):
         estado = ckpt.get("estado", ckpt)
         modelo.load_state_dict(estado)
         print(f"[+] Pesos UDVD cargados exitosamente desde: {ckpt_path.name}")
+    
     modelo = modelo.to(dispositivo)
     modelo.eval()
     return modelo
@@ -152,7 +173,7 @@ def procesar_split(split, dir_in, ramas, modelo_udvd, dispositivo, max_workers=8
 
     archivos = sorted(list(dir_imgs.glob("*.jpg")) + list(dir_imgs.glob("*.png")))
     total_imgs = len(archivos)
-    print(f"\nProcesando Split '{split}' ({total_imgs} imágenes) en {dispositivo}...")
+    print(f"\nProcesando Split '{split}' ({total_imgs} imágenes)...")
 
     pool = ThreadPoolExecutor(max_workers=max_workers)
     futures = []
@@ -177,7 +198,7 @@ def procesar_split(split, dir_in, ramas, modelo_udvd, dispositivo, max_workers=8
             dest_img_3 = ramas["3_udvd_standard"] / split / "images" / img_p.name
             dest_img_4 = ramas["4_udvd_mejorado"] / split / "images" / img_p.name
 
-            # Si ya se procesaron las 4 ramas, continuar
+            # Si ya existen todas, continuar
             if dest_img_2.is_file() and dest_img_3.is_file() and dest_img_4.is_file():
                 continue
 
@@ -202,7 +223,7 @@ def procesar_split(split, dir_in, ramas, modelo_udvd, dispositivo, max_workers=8
             if not dest_img_3.is_file():
                 rgb_pad = cv2.copyMakeBorder(rgb_sin_hud, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
                 t_img = torch.from_numpy(np.ascontiguousarray(rgb_pad)).permute(2, 0, 1).float().div(255.0)
-                stack_5 = t_img.repeat(5, 1, 1).unsqueeze(0).to(dispositivo, non_blocking=True)
+                stack_5 = t_img.repeat(5, 1, 1).unsqueeze(0).to(dispositivo)
 
                 out_std = modelo_udvd(stack_5)
                 out_std = torch.clamp(out_std, 0.0, 1.0).squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -216,7 +237,7 @@ def procesar_split(split, dir_in, ramas, modelo_udvd, dispositivo, max_workers=8
                 rgb_destriped = aplicar_destriping(rgb_sin_hud)
                 rgb_pad_dest = cv2.copyMakeBorder(rgb_destriped, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
                 t_dest = torch.from_numpy(np.ascontiguousarray(rgb_pad_dest)).permute(2, 0, 1).float().div(255.0)
-                stack_dest = t_dest.repeat(5, 1, 1).unsqueeze(0).to(dispositivo, non_blocking=True)
+                stack_dest = t_dest.repeat(5, 1, 1).unsqueeze(0).to(dispositivo)
 
                 out_enh = modelo_udvd(stack_dest)
                 out_enh = torch.clamp(out_enh, 0.0, 1.0).squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -234,7 +255,7 @@ def main():
     parser = argparse.ArgumentParser(description="Procesar Dataset Elegido con Pipeline UDVD y HUD")
     parser.add_argument("--dataset-in", default="datasets/dataset_preprocesado_11gb/modelo_yolov11_dataset_completo_preprocesado", help="Ruta al dataset de entrada")
     parser.add_argument("--salida-dir", default="datasets/dataset_ablation_final", help="Directorio raíz para las ramas de ablación generadas")
-    parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu", help="Dispositivo")
+    parser.add_argument("--device", default="cuda", help="Dispositivo preferido")
     parser.add_argument("--workers", type=int, default=8, help="Hilos para guardar en disco")
     args = parser.parse_args()
 
@@ -267,12 +288,9 @@ def main():
     print("      PIPELINE DE TRANSFORMACIÓN DE ABLACIÓN (HUD + UDVD ESTÁNDAR / MEJORADO)")
     print(f"Dataset Base: {dir_in}")
     print(f"Destino:      {dir_out_raiz}")
-    print(f"Dispositivo:  {args.device} | Hilos de Disco: {args.workers}")
     print("=" * 85)
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    dispositivo = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    dispositivo = seleccionar_mejor_dispositivo(args.device)
     modelo_udvd = cargar_modelo_udvd(dispositivo)
 
     # Procesar Test, Val y Train

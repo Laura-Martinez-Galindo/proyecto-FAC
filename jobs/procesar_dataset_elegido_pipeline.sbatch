@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --time=01:30:00
+#SBATCH --time=02:00:00
 #SBATCH --output=jobs/logs/proc_ablation_pipeline_%j.out
 #SBATCH --error=jobs/logs/proc_ablation_pipeline_%j.err
 
@@ -19,6 +19,8 @@ echo "Fecha: $(date)"
 echo "Nodo: $(hostname)"
 echo "=========================================================="
 
+nvidia-smi
+
 source fac_env311/bin/activate
 module load cuda/12.1 2>/dev/null || true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -27,7 +29,7 @@ python scripts/procesar_dataset_elegido_pipeline.py \
     --dataset-in datasets/dataset_preprocesado_11gb/modelo_yolov11_dataset_completo_preprocesado \
     --salida-dir datasets/dataset_ablation_final \
     --workers 8 \
-    --device cuda:0
+    --device cuda
 
 echo "=========================================================="
 echo "Pipeline de Transformacion completado exitosamente."
