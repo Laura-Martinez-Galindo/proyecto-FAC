@@ -401,26 +401,23 @@ def crear_enlace_o_copiar(origen, destino):
         shutil.copy2(origen, destino)
 
 
+def bloque_esta_completo(bloque, rutas_frames, carpeta_salida_temporal):
+    """Comprueba si todos los frames centrales del bloque ya existen en la salida temporal."""
+    for indice_global in range(bloque["inicio_central"], bloque["fin_central"]):
+        ruta_esperada = carpeta_salida_temporal / rutas_frames[indice_global].name
+        if not ruta_esperada.is_file() or ruta_esperada.stat().st_size == 0:
+            return False
+    return True
+
+
 def preparar_bloque(indice_bloque, inicio_central, fin_central, rutas_frames, rutas_mascaras, carpeta_trabajo, solapamiento):
-    """Prepara las entradas de un bloque con solapamiento temporal."""
+    """Define los metadatos de un bloque con solapamiento temporal."""
     inicio_lectura = max(0, inicio_central - solapamiento)
     fin_lectura = min(len(rutas_frames), fin_central + solapamiento)
     carpeta_bloque = carpeta_trabajo / f"bloque_{indice_bloque:04d}"
     carpeta_entrada = carpeta_bloque / "entrada"
     carpeta_mascaras_bloque = carpeta_bloque / "mascaras"
     carpeta_salida = carpeta_bloque / "salida"
-
-    if carpeta_bloque.exists():
-        shutil.rmtree(carpeta_bloque)
-
-    carpeta_entrada.mkdir(parents=True, exist_ok=False)
-    carpeta_mascaras_bloque.mkdir(parents=True, exist_ok=False)
-    carpeta_salida.mkdir(parents=True, exist_ok=False)
-
-    for indice_local, indice_global in enumerate(range(inicio_lectura, fin_lectura)):
-        nombre_temporal = f"{indice_local:06d}.png"
-        crear_enlace_o_copiar(rutas_frames[indice_global], carpeta_entrada / nombre_temporal)
-        crear_enlace_o_copiar(rutas_mascaras[indice_global], carpeta_mascaras_bloque / nombre_temporal)
 
     return {
         "indice_bloque": indice_bloque,
@@ -433,7 +430,32 @@ def preparar_bloque(indice_bloque, inicio_central, fin_central, rutas_frames, ru
         "carpeta_mascaras": carpeta_mascaras_bloque,
         "carpeta_salida": carpeta_salida,
         "ruta_log": carpeta_bloque / "propainter.log",
+        "rutas_frames": rutas_frames,
+        "rutas_mascaras": rutas_mascaras,
     }
+
+
+def instanciar_carpetas_bloque(bloque):
+    """Crea los enlaces y carpetas de trabajo únicamente cuando el bloque va a ejecutarse."""
+    carpeta_bloque = bloque["carpeta_bloque"]
+    carpeta_entrada = bloque["carpeta_entrada"]
+    carpeta_mascaras_bloque = bloque["carpeta_mascaras"]
+    carpeta_salida = bloque["carpeta_salida"]
+
+    if carpeta_bloque.exists():
+        shutil.rmtree(carpeta_bloque)
+
+    carpeta_entrada.mkdir(parents=True, exist_ok=False)
+    carpeta_mascaras_bloque.mkdir(parents=True, exist_ok=False)
+    carpeta_salida.mkdir(parents=True, exist_ok=False)
+
+    rutas_frames = bloque["rutas_frames"]
+    rutas_mascaras = bloque["rutas_mascaras"]
+
+    for indice_local, indice_global in enumerate(range(bloque["inicio_lectura"], bloque["fin_lectura"])):
+        nombre_temporal = f"{indice_local:06d}.png"
+        crear_enlace_o_copiar(rutas_frames[indice_global], carpeta_entrada / nombre_temporal)
+        crear_enlace_o_copiar(rutas_mascaras[indice_global], carpeta_mascaras_bloque / nombre_temporal)
 
 
 def crear_bloques(rutas_frames, rutas_mascaras, carpeta_trabajo, parametros):
@@ -502,6 +524,7 @@ def guardar_frame_final(origen, destino, compresion_png):
 # 11. Inferencia por bloque
 def ejecutar_bloque(bloque, indice_gpu, rutas_frames, carpeta_salida_temporal, parametros, ruta_ffmpeg):
     """Ejecuta ProPainter sobre un bloque y guarda su región central."""
+    instanciar_carpetas_bloque(bloque)
     cantidad_lectura = bloque["fin_lectura"] - bloque["inicio_lectura"]
 
     comando = [
@@ -552,6 +575,10 @@ def ejecutar_bloque(bloque, indice_gpu, rutas_frames, carpeta_salida_temporal, p
         ruta_destino = carpeta_salida_temporal / rutas_frames[indice_global].name
         guardar_frame_final(frames_generados[indice_local], ruta_destino, parametros["compresion_png"])
 
+    # Limpiar carpeta temporal del bloque para no saturar disco
+    if parametros["eliminar_temporales"] and bloque["carpeta_bloque"].exists():
+        shutil.rmtree(bloque["carpeta_bloque"], ignore_errors=True)
+
     return {
         "indice_bloque": bloque["indice_bloque"],
         "gpu": indice_gpu,
@@ -561,7 +588,7 @@ def ejecutar_bloque(bloque, indice_gpu, rutas_frames, carpeta_salida_temporal, p
 
 # 12. Limpieza principal
 def limpiar_hud(argumentos):
-    """Ejecuta ProPainter y actualiza config/videos.json."""
+    """Ejecuta ProPainter y actualiza config/videos.json con soporte de reanudación."""
     configuracion = cargar_configuracion()
     datos_video, parametros_configurados = obtener_datos_video(argumentos.video, configuracion)
     parametros = validar_parametros(parametros_configurados)
@@ -571,14 +598,28 @@ def limpiar_hud(argumentos):
     carpeta_frames, carpeta_mascaras, carpeta_salida, carpeta_salida_temporal, carpeta_salida_respaldo, carpeta_trabajo = obtener_rutas(datos_video)
     rutas_frames, rutas_mascaras, resolucion_original = validar_entradas(carpeta_frames, carpeta_mascaras)
 
-    preparar_carpeta_vacia(carpeta_salida_temporal)
-    preparar_carpeta_vacia(carpeta_trabajo)
+    carpeta_salida_temporal.mkdir(parents=True, exist_ok=True)
+    carpeta_trabajo.mkdir(parents=True, exist_ok=True)
 
     tiempo_inicio = time.monotonic()
     bloques = crear_bloques(rutas_frames, rutas_mascaras, carpeta_trabajo, parametros)
+    
+    # Comprobar qué bloques ya están completos (por si hubo un timeout previo)
+    bloques_pendientes = []
+    frames_ya_listos = 0
+    for bloque in bloques:
+        if bloque_esta_completo(bloque, rutas_frames, carpeta_salida_temporal):
+            frames_ya_listos += (bloque["fin_central"] - bloque["inicio_central"])
+        else:
+            bloques_pendientes.append(bloque)
+
+    if frames_ya_listos > 0:
+        print(f"\n[REANUDACIÓN DETECTADA] Se encontraron {frames_ya_listos}/{len(rutas_frames)} frames ya procesados.")
+        print(f"Bloques restantes por procesar: {len(bloques_pendientes)}/{len(bloques)}\n")
+
     gpus = parametros["gpus"]
     bloqueo_progreso = threading.Lock()
-    progreso = tqdm(total=len(rutas_frames), desc="Procesando HUD con ProPainter", unit="frame", mininterval=2.0, dynamic_ncols=True)
+    progreso = tqdm(total=len(rutas_frames), initial=frames_ya_listos, desc="Procesando HUD con ProPainter", unit="frame", mininterval=2.0, dynamic_ncols=True)
     resultados = []
     errores = []
     bloqueo_errores = threading.Lock()
@@ -605,7 +646,7 @@ def limpiar_hud(argumentos):
     bloques_por_gpu = {}
 
     for posicion_gpu, indice_gpu in enumerate(gpus):
-        bloques_por_gpu[indice_gpu] = [bloque for posicion, bloque in enumerate(bloques) if posicion % len(gpus) == posicion_gpu]
+        bloques_por_gpu[indice_gpu] = [bloque for posicion, bloque in enumerate(bloques_pendientes) if posicion % len(gpus) == posicion_gpu]
 
     try:
         with ThreadPoolExecutor(max_workers=len(gpus)) as ejecutor:
