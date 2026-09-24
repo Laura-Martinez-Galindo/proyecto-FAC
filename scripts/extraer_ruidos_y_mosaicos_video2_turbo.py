@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Extracción Instantánea de Ruido y Generación de Mosaicos Estructurales - Video 2:
-Optimizado para procesamiento en memoria RAM (Zero I/O bottleneck):
-- Procesa 83.011 frames en ~10 a 15 segundos en 16 núcleos.
-- Filtra marcos homogéneos/planos mediante densidad Sobel.
+Extracción Turbo de Ruido y Generación de Mosaicos Estructurales - Video 2:
+- Detecta automáticamente la INTERSECCIÓN exacta de frames existentes (ej. los 18.000 frames del experimento).
+- Procesa a máxima velocidad en 16 núcleos de CPU sin tiempos muertos.
+- Filtra marcos homogéneos/planos mediante gradiente Sobel.
 - Genera los 10 Mosaicos Cuádruples 2x2 de alta resolución (Top 5 MAX Ruido y Top 5 MIN Ruido con estructuras).
-- Guarda el CSV completo de estadísticas y la gráfica de línea de tiempo.
+- Guarda el CSV completo de estadísticas y extrae los mapas de ruido.
 """
 
 import argparse
@@ -42,7 +42,6 @@ def calcular_energia_sobel(gray):
 
 
 def procesar_lote_en_ram(datos_lote):
-    """Procesamiento ultra-rápido en RAM sin escribir miles de archivos en disco."""
     lista_archivos, dir_orig_str, dir_sin_hud_str, dir_den_str = datos_lote
     
     dir_orig = Path(dir_orig_str)
@@ -78,11 +77,9 @@ def procesar_lote_en_ram(datos_lote):
         gr_ori = cv2.cvtColor(im_ori, cv2.COLOR_BGR2GRAY)
         gr_sin = cv2.cvtColor(im_sin, cv2.COLOR_BGR2GRAY)
 
-        # 1. Residuo HUD
         res_hud = cv2.absdiff(gr_ori, gr_sin)
         mae_hud = float(np.mean(res_hud))
 
-        # 2. Residuo Térmico
         mae_termico = 0.0
         s_den = 0.0
         var_lap_den = 0.0
@@ -133,8 +130,8 @@ def crear_mosaico_cuadruple(im_ori, im_sin, im_den, res_term, info):
     
     cv2.putText(canvas, "1. ORIGINAL (Con HUD + Ruido)", (20, 40), font, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
     cv2.putText(canvas, "2. SIN HUD (Inpainting ProPainter)", (w_pan + 20, 40), font, 1.0, (255, 200, 0), 2, cv2.LINE_AA)
-    cv2.putText(canvas, "3. RESTAURADO (Sin HUD + UDVD Denoised)", (20, h_pan + 40), font, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
-    cv2.putText(canvas, "4. RUIDO TERMICO EXTRAIDO (|Sin_HUD - UDVD| x4)", (w_pan + 20, h_pan + 40), font, 1.0, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(canvas, "3. RESTAURADO (Sin HUD + Denoised)", (20, h_pan + 40), font, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
+    cv2.putText(canvas, "4. RUIDO TERMICO EXTRAIDO (|Sin_HUD - Denoised| x4)", (w_pan + 20, h_pan + 40), font, 1.0, (0, 255, 255), 2, cv2.LINE_AA)
 
     sub = f"Frame #{info['frame_idx']} | MAE Ruido: {info['mae_termico']:.2f} | Sobel Estructura: {info['sobel_energia']:.1f} | Sigma MAD: {info['sigma_denoised']:.2f}"
     cv2.putText(canvas, sub, (20, 2 * h_pan - 20), font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
@@ -143,11 +140,11 @@ def crear_mosaico_cuadruple(im_ori, im_sin, im_den, res_term, info):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extracción Rápida de Ruido y Mosaicos Video 2")
+    parser = argparse.ArgumentParser(description="Extracción Turbo de Ruido y Mosaicos Video 2")
     parser.add_argument("--carpeta-original", default="videos/video2/frames_originales", help="Ruta originales")
     parser.add_argument("--carpeta-sin-hud", default="videos/video2/frames_sin_hud", help="Ruta sin HUD")
     parser.add_argument("--carpeta-denoised", default=None, help="Ruta UDVD denoised")
-    parser.add_argument("--cores", type=int, default=16, help="Núcleos de CPU (default: 16)")
+    parser.add_argument("--cores", type=int, default=16, help="Núcleos de CPU")
     args = parser.parse_args()
 
     dir_orig = (RAIZ / args.carpeta_original).resolve()
@@ -161,10 +158,10 @@ def main():
         dir_den = (RAIZ / args.carpeta_denoised).resolve()
 
     print("=" * 85)
-    print("      EXTRACCIÓN INSTANTÁNEA EN MEMORIA RAM (16 CORES) - VIDEO 2")
+    print("      EXTRACCIÓN TURBO DE RUIDO Y MOSAICOS (INTERSECCIÓN EXACTA) - VIDEO 2")
     print(f"Original:           {dir_orig}")
     print(f"Sin HUD:            {dir_sin}")
-    print(f"Denoised (UDVD):    {dir_den}")
+    print(f"Denoised:           {dir_den}")
     print(f"Paralelismo:        {args.cores} Núcleos CPU")
     print("=" * 85)
 
@@ -172,20 +169,26 @@ def main():
     dir_mosaicos.mkdir(parents=True, exist_ok=True)
 
     exts = {".png", ".jpg", ".jpeg"}
-    archivos_sin = sorted([p.name for p in dir_sin.iterdir() if p.is_file() and p.suffix.lower() in exts], key=lambda x: [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", x)])
-    total = len(archivos_sin)
+    
+    # Si la carpeta denoised tiene un subconjunto (ej. ultimos 10 min = 18k frames), iterar sobre ella para máxima velocidad
+    if dir_den.is_dir():
+        archivos_eval_nombres = set(p.name for p in dir_den.iterdir() if p.is_file() and p.suffix.lower() in exts)
+    else:
+        archivos_eval_nombres = set(p.name for p in dir_sin.iterdir() if p.is_file() and p.suffix.lower() in exts)
 
-    print(f"\nTotal frames a procesar: {total}")
+    archivos_sin_ordenados = sorted(list(archivos_eval_nombres), key=lambda x: [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", x)])
+    total = len(archivos_sin_ordenados)
 
-    # Lotes pequeños (100 frames por lote) para que la barra avance rápido
+    print(f"\nTotal frames en la intersección exacta a procesar: {total}")
+
     tam_lote = 150
     lotes = []
     for i in range(0, total, tam_lote):
-        sub_nombres = [(archivos_sin[j], j + 1) for j in range(i, min(i + tam_lote, total))]
+        sub_nombres = [(archivos_sin_ordenados[j], j + 1) for j in range(i, min(i + tam_lote, total))]
         lotes.append((sub_nombres, str(dir_orig), str(dir_sin), str(dir_den)))
 
     todos_registros = []
-    print(f"Analizando frames en paralelo en {args.cores} núcleos CPU...")
+    print(f"Analizando {total} frames en paralelo en {args.cores} núcleos CPU...")
 
     with ProcessPoolExecutor(max_workers=args.cores) as executor:
         futures = [executor.submit(procesar_lote_en_ram, lote) for lote in lotes]
@@ -199,12 +202,11 @@ def main():
     df.to_csv(csv_out, index=False)
     print(f"\n[+] Estadísticas completas guardadas en: {csv_out}")
 
-    # Filtrar marcos homogéneos/planos
+    # Filtrar marcos homogéneos
     umbral_sobel = df["sobel_energia"].quantile(0.35)
     df_estructural = df[df["sobel_energia"] >= umbral_sobel].copy()
-    print(f"[+] Frames con contenido estructural real (vías, ríos, dragas, vehículos): {len(df_estructural)} de {len(df)}")
+    print(f"[+] Frames con contenido estructural real (vías, ríos, dragas, vegetación): {len(df_estructural)} de {len(df)}")
 
-    # Top 5 con MAYOR ruido y Top 5 con MENOR ruido
     top_mas_ruido = df_estructural.sort_values(by="mae_termico", ascending=False).head(5)
     top_menos_ruido = df_estructural.sort_values(by="mae_termico", ascending=True).head(5)
 
@@ -245,7 +247,7 @@ def main():
             print(f"  * [MIN RUIDO #{rank}] Guardado: {out_p.name} (MAE: {row['mae_termico']:.2f})")
 
     print("\n" + "=" * 85)
-    print("PROCESO COMPLETADO EXITOSAMENTE EN SEGUNDOS.")
+    print("PROCESO COMPLETADO EXITOSAMENTE.")
     print(f"Mosaicos 2x2: {dir_mosaicos}")
     print(f"Resumen CSV:  {csv_out}")
     print("=" * 85)
