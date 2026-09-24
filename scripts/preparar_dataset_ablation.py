@@ -53,6 +53,7 @@ def encontrar_directorios_video(raiz):
         raiz / "videos/video1/expos/udvd_sinhud",
         raiz / "videos/video1/UDVD_SinHUD_K5_lr1e3",
         raiz / "videos/video1/udvd_sinhud",
+        raiz / "videos/video1/udvd_sin_hud",
         raiz / "videos/video1/udvd",
     ]
     v2_sin_hud_cands = [
@@ -61,7 +62,10 @@ def encontrar_directorios_video(raiz):
     ]
     v2_udvd_cands = [
         raiz / "videos/video2/expos/udvd_sin_hud",
+        raiz / "videos/video2/expos/udvd_sinhud",
         raiz / "videos/video2/udvd_sin_hud",
+        raiz / "videos/video2/udvd_sinhud",
+        raiz / "videos/video2/UDVD_sin_hud",
         raiz / "videos/video2/udvd",
     ]
     return {
