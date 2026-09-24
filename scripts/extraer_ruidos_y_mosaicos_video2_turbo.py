@@ -111,32 +111,59 @@ def procesar_lote_en_ram(datos_lote):
     return resultados
 
 
-def crear_mosaico_cuadruple(im_ori, im_sin, im_den, res_term, info):
-    h, w = im_sin.shape[:2]
-    ruido_abs = np.clip(np.abs(res_term) * 4.0, 0, 255).astype(np.uint8)
-    ruido_inferno = cv2.applyColorMap(ruido_abs, cv2.COLORMAP_INFERNO)
+def renderizar_mosaico_1x4(img_ori, img_sin, img_den, res_term, info, salida_path):
+    h, w = img_sin.shape[:2]
+    if img_ori.shape[:2] != (h, w):
+        img_ori = cv2.resize(img_ori, (w, h))
+    if img_den is None:
+        img_den = img_sin.copy()
+    elif img_den.shape[:2] != (h, w):
+        img_den = cv2.resize(img_den, (w, h))
 
-    if im_ori.shape[:2] != (h, w):
-        im_ori = cv2.resize(im_ori, (w, h))
-    if im_den is None or im_den.shape[:2] != (h, w):
-        im_den = im_sin.copy()
+    # Residuo térmico de alta frecuencia (eliminando iluminación de fondo / DC offset)
+    blur_offset = cv2.GaussianBlur(res_term, (61, 61), 20.0)
+    ruido_alta_frec = res_term - blur_offset
+    ruido_mag = np.abs(ruido_alta_frec)
 
-    fila_sup = np.hstack([im_ori, im_sin])
-    fila_inf = np.hstack([im_den, ruido_inferno])
-    canvas = np.vstack([fila_sup, fila_inf])
+    # Escala estándar absoluta de 0 a 25 Niveles Digitales (DN) para comparación uniforme
+    v_min, v_max = 0.0, 25.0
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    h_pan, w_pan = h, w
-    
-    cv2.putText(canvas, "1. ORIGINAL (Con HUD + Ruido)", (20, 40), font, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
-    cv2.putText(canvas, "2. SIN HUD (Inpainting ProPainter)", (w_pan + 20, 40), font, 1.0, (255, 200, 0), 2, cv2.LINE_AA)
-    cv2.putText(canvas, "3. RESTAURADO (Sin HUD + Denoised)", (20, h_pan + 40), font, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
-    cv2.putText(canvas, "4. RUIDO TERMICO EXTRAIDO (|Sin_HUD - Denoised| x4)", (w_pan + 20, h_pan + 40), font, 1.0, (0, 255, 255), 2, cv2.LINE_AA)
+    plt.close('all')
+    fig, axs = plt.subplots(1, 4, figsize=(26, 6.2), gridspec_kw={'width_ratios': [1, 1, 1, 1.15]})
 
-    sub = f"Frame #{info['frame_idx']} | MAE Ruido: {info['mae_termico']:.2f} | Sobel Estructura: {info['sobel_energia']:.1f} | Sigma MAD: {info['sigma_denoised']:.2f}"
-    cv2.putText(canvas, sub, (20, 2 * h_pan - 20), font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    rgb_ori = cv2.cvtColor(img_ori, cv2.COLOR_BGR2RGB)
+    rgb_sin = cv2.cvtColor(img_sin, cv2.COLOR_BGR2RGB)
+    rgb_den = cv2.cvtColor(img_den, cv2.COLOR_BGR2RGB)
 
-    return canvas
+    # Panel 1: Original
+    axs[0].imshow(rgb_ori)
+    axs[0].set_title("(a) Original (Con HUD)", fontsize=13, fontweight="bold", pad=10, color="#2c3e50")
+    axs[0].axis("off")
+
+    # Panel 2: Sin HUD
+    axs[1].imshow(rgb_sin)
+    axs[1].set_title("(b) Sin HUD (Inpainting)", fontsize=13, fontweight="bold", pad=10, color="#2c3e50")
+    axs[1].axis("off")
+
+    # Panel 3: Restaurado UDVD
+    axs[2].imshow(rgb_den)
+    axs[2].set_title("(c) Restaurado (UDVD)", fontsize=13, fontweight="bold", pad=10, color="#2c3e50")
+    axs[2].axis("off")
+
+    # Panel 4: Ruido Térmico Extraído
+    im_ruido = axs[3].imshow(ruido_mag, cmap="inferno", vmin=v_min, vmax=v_max)
+    axs[3].set_title("(d) Ruido Térmico Extraído", fontsize=13, fontweight="bold", pad=10, color="#2c3e50")
+    axs[3].axis("off")
+
+    # Colorbar estándar y limpia
+    cbar = fig.colorbar(im_ruido, ax=axs[3], fraction=0.046, pad=0.03)
+    cbar.set_label("Amplitud de Ruido (|DN|)", fontsize=11, fontweight="bold")
+    cbar.ax.tick_params(labelsize=9)
+
+    plt.tight_layout(pad=1.0)
+    Path(salida_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(salida_path, dpi=300, bbox_inches="tight")
+    plt.close()
 
 
 def main():
@@ -214,7 +241,7 @@ def main():
     top_mas_ruido = df_estructural.sort_values(by="mae_termico", ascending=False).head(5)
     top_menos_ruido = df_estructural.sort_values(by="mae_termico", ascending=True).head(5)
 
-    print("\nGenerando Mosaicos 2x2 de alta resolución para los casos seleccionados...")
+    print("\nGenerando Mosaicos 1x4 Horizontales de alta resolución para los casos seleccionados...")
 
     for rank, (_, row) in enumerate(top_mas_ruido.iterrows(), 1):
         nom = row["nombre_archivo"]
@@ -228,9 +255,8 @@ def main():
             gr_s = cv2.cvtColor(im_s, cv2.COLOR_BGR2GRAY)
             gr_d = cv2.cvtColor(im_d, cv2.COLOR_BGR2GRAY)
             res_term = gr_s.astype(np.float32) - gr_d.astype(np.float32)
-            mosaico = crear_mosaico_cuadruple(im_o, im_s, im_d, res_term, row.to_dict())
             out_p = dir_mosaicos / f"mosaico_MAX_RUIDO_rank{rank:02d}_{nom}"
-            cv2.imwrite(str(out_p), mosaico, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            renderizar_mosaico_1x4(im_o, im_s, im_d, res_term, row.to_dict(), out_p)
             print(f"  * [MAX RUIDO #{rank}] Guardado: {out_p.name} (MAE: {row['mae_termico']:.2f})")
 
     for rank, (_, row) in enumerate(top_menos_ruido.iterrows(), 1):
@@ -245,9 +271,8 @@ def main():
             gr_s = cv2.cvtColor(im_s, cv2.COLOR_BGR2GRAY)
             gr_d = cv2.cvtColor(im_d, cv2.COLOR_BGR2GRAY)
             res_term = gr_s.astype(np.float32) - gr_d.astype(np.float32)
-            mosaico = crear_mosaico_cuadruple(im_o, im_s, im_d, res_term, row.to_dict())
             out_p = dir_mosaicos / f"mosaico_MIN_RUIDO_rank{rank:02d}_{nom}"
-            cv2.imwrite(str(out_p), mosaico, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            renderizar_mosaico_1x4(im_o, im_s, im_d, res_term, row.to_dict(), out_p)
             print(f"  * [MIN RUIDO #{rank}] Guardado: {out_p.name} (MAE: {row['mae_termico']:.2f})")
 
     print("\n" + "=" * 85)

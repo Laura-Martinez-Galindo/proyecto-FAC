@@ -225,6 +225,16 @@ def procesar_un_video(v_id, stride=30, batch_size=16, device="cuda:0", m_niqe=No
         print(f"[-] Omitiendo {v_id}: carpetas no encontradas ({dir_orig} o {dir_sin_hud})")
         return None
 
+    csv_out = RAIZ / f"videos/{v_id}/linea_tiempo_{v_id}.csv"
+    png_out = RAIZ / f"figuras_tesis/linea_tiempo/linea_tiempo_{v_id}.png"
+    if csv_out.is_file() and csv_out.stat().st_size > 500:
+        print(f"\n[+] Datos ya calculados y verificados para {v_id.upper()} ({csv_out.name}). Reutilizando...")
+        df_existente = pd.read_csv(csv_out)
+        if not df_existente.empty:
+            tiene_den = ("sigma_denoised" in df_existente.columns and df_existente["sigma_denoised"].sum() > 0)
+            graficar_comparativa(df_existente, png_out, f"{v_id.upper()}", tiene_denoised=tiene_den)
+            return df_existente
+
     print("\n" + "=" * 85)
     print(f"   ANÁLISIS TEMPORAL TURBO: {v_id.upper()} (Batch Size = {batch_size} | Stride = {stride})")
     print(f"1. Original:    {dir_orig}")
