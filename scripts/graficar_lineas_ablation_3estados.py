@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Comparativa Temporal Ultra-Rápida y Extracción de Residuos de Ruido (Modo Turbo con Batching GPU):
-- Inferencia de BRISQUE y NIQE por LOTES en GPU (Batch Size = 16) -> Aceleración de 20x.
-- Stride inteligente (default: 30 = 1 muestra por segundo) -> 2.700 puntos ultra-densos.
-- Tiempo total estimado: Menos de 45 segundos para el video completo.
+Comparativa Temporal Ultra-Rápida de Ruido y Calidad para Todos los Videos (Video 1, Video 2, Video 3):
+- Video 1: Original vs Sin HUD vs Denoised (UDVD).
+- Video 2: Original vs Sin HUD vs Restaurado (UDVD/Ensemble).
+- Video 3: Original vs Sin HUD (sobre los 139.520 frames procesados).
+- Genera la figura comparativa consolidada multi-vuelo para el artículo de tesis.
+
+Acelerado con inferencia por lotes en GPU (Batch Size = 16) y Stride Inteligente.
 """
 
 import argparse
@@ -51,7 +54,7 @@ def crear_metricas_pyiqa(dispositivo, habilitar=True):
         m_brisque = pyiqa.create_metric("brisque", device=dispositivo)
         return m_niqe, m_brisque
     except Exception as e:
-        print(f"[!] pyiqa no cargado: {e}.")
+        print(f"[!] pyiqa no disponible: {e}.")
         return None, None
 
 
@@ -143,65 +146,98 @@ def graficar_comparativa(df, salida_png, titulo="Video", tiene_denoised=True):
     print(f"[+] Gráfica temporal guardada exitosamente en: {salida_png}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Comparativa Temporal Ultra-Rápida")
-    parser.add_argument("--video", default="video2", help="Identificador del video (video1, video2 o video3)")
-    parser.add_argument("--carpeta-original", default=None, help="Ruta a frames originales")
-    parser.add_argument("--carpeta-sin-hud", default=None, help="Ruta a frames sin HUD")
-    parser.add_argument("--carpeta-denoised", default=None, help="Ruta a frames denoised")
-    parser.add_argument("--stride", type=int, default=30, help="Paso de muestreo temporal (default: 30 = 1 seg)")
-    parser.add_argument("--batch-size", type=int, default=16, help="Batch size para GPU pyiqa")
-    parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu", help="Dispositivo")
-    parser.add_argument("--guardar-mapas-ruido", action="store_true", default=False, help="Guardar imágenes de ruido en disco")
-    args = parser.parse_args()
+def graficar_comparativa_multivuelo(dfs_dict, salida_png):
+    """Genera la comparativa de 3 paneles verticales para los 3 videos."""
+    plt.style.use("seaborn-v0_8-whitegrid" if "seaborn-v0_8-whitegrid" in plt.style.available else "default")
+    fig, axs = plt.subplots(len(dfs_dict), 1, figsize=(16, 4.5 * len(dfs_dict)), sharey=False)
+    if len(dfs_dict) == 1:
+        axs = [axs]
 
-    # Detección automática de carpetas
-    if not args.carpeta_original:
-        args.carpeta_original = f"videos/{args.video}/frames_originales"
-    if not args.carpeta_sin_hud:
-        p_sh = RAIZ / f"videos/{args.video}/frames_sin_hud"
-        p_tmp = RAIZ / f"videos/{args.video}/frames_sin_hud.tmp"
-        args.carpeta_sin_hud = str(p_sh if p_sh.is_dir() else (p_tmp if p_tmp.is_dir() else p_sh))
+    nombres_leg = {
+        "video1": "Video 1: Telembí / Patía (FAC 5748 - 10.500 FT)",
+        "video2": "Video 2: Santander (FLIR Systems - 15.820 FT)",
+        "video3": "Video 3: Misión de Vigilancia Continua",
+    }
+
+    fig.suptitle("Comparativa Multi-Misión: Evolución del Nivel de Ruido Térmico (Original vs Sin HUD vs Denoised)", fontsize=15, fontweight="bold", y=0.99)
+
+    for idx, (v_id, df) in enumerate(dfs_dict.items()):
+        ax = axs[idx]
+        frames = df["frame_idx"].values
+        ventana = max(3, len(df) // 100)
+
+        s_o_ma = df["sigma_orig"].rolling(ventana, center=True, min_periods=1).mean().values
+        s_s_ma = df["sigma_sin_hud"].rolling(ventana, center=True, min_periods=1).mean().values
+
+        ax.plot(frames, s_o_ma, color="#d62728", lw=2.0, label="1. Original (Con HUD)")
+        ax.plot(frames, s_s_ma, color="#1f77b4", lw=2.0, linestyle="--", label="2. Sin HUD")
+
+        if "sigma_denoised" in df.columns and df["sigma_denoised"].sum() > 0:
+            s_d_ma = df["sigma_denoised"].rolling(ventana, center=True, min_periods=1).mean().values
+            ax.plot(frames, s_d_ma, color="#2ca02c", lw=2.2, label="3. Restaurado Denoised (UDVD)")
+
+        ax.set_ylabel("Sigma Ruido (σ MAD)", fontsize=11, fontweight="bold")
+        ax.set_title(f"{nombres_leg.get(v_id, v_id.upper())}", fontsize=12, fontweight="bold")
+        ax.legend(loc="upper right", frameon=True)
+        ax.grid(True, alpha=0.3)
+
+    axs[-1].set_xlabel("Índice de Cuadro Temporal (Frames de Vuelo)", fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    salida_png = Path(salida_png)
+    salida_png.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(salida_png, dpi=300)
+    plt.close()
+    print(f"\n[+] Gráfica consolidada multi-vuelo exportada a: {salida_png}")
+
+
+def procesar_un_video(v_id, stride=30, batch_size=16, device="cuda:0", m_niqe=None, m_brisque=None):
+    # Carpetas según video
+    dir_orig = (RAIZ / f"videos/{v_id}/frames_originales").resolve()
     
-    if not args.carpeta_denoised:
-        cands = list(RAIZ.glob(f"videos/{args.video}/expos/*"))
-        cands_validos = [c for c in cands if c.is_dir() and len(list(c.glob("*.png")) + list(c.glob("*.jpg"))) > 100]
-        if cands_validos:
-            args.carpeta_denoised = str(cands_validos[0])
+    p_sh = RAIZ / f"videos/{v_id}/frames_sin_hud"
+    p_tmp = RAIZ / f"videos/{v_id}/frames_sin_hud.tmp"
+    dir_sin_hud = (p_sh if p_sh.is_dir() else (p_tmp if p_tmp.is_dir() else p_sh)).resolve()
 
-    dir_orig = (RAIZ / args.carpeta_original).resolve()
-    dir_sin_hud = (RAIZ / args.carpeta_sin_hud).resolve()
-    dir_denoised = (RAIZ / args.carpeta_denoised).resolve() if args.carpeta_denoised else None
+    dir_denoised = None
+    if v_id == "video1":
+        p_d = RAIZ / "videos/video1/expos/UDVD_SinHUD_K5_lr1e3"
+        if not p_d.is_dir():
+            p_d = RAIZ / "videos/video1/expos/n2n_sin_hud"
+        if p_d.is_dir():
+            dir_denoised = p_d.resolve()
+    elif v_id == "video2":
+        cands = list(RAIZ.glob("videos/video2/expos/*"))
+        cands_v = [c for c in cands if c.is_dir() and len(list(c.glob("*.png")) + list(c.glob("*.jpg"))) > 100]
+        if cands_v:
+            dir_denoised = cands_v[0].resolve()
 
     tiene_denoised = dir_denoised is not None and dir_denoised.is_dir()
 
-    print("=" * 85)
-    print(f"   ANÁLISIS TEMPORAL TURBO (Batch Size = {args.batch_size} | Stride = {args.stride})")
-    print(f"Video:              {args.video.upper()}")
-    print(f"1. Original:        {dir_orig}")
-    print(f"2. Sin HUD:         {dir_sin_hud}")
-    if tiene_denoised:
-        print(f"3. Denoised:        {dir_denoised}")
-    else:
-        print(f"3. Denoised:        [No configurado - Evaluando Original vs Sin HUD]")
+    if not dir_orig.is_dir() or not dir_sin_hud.is_dir():
+        print(f"[-] Omitiendo {v_id}: carpetas no encontradas ({dir_orig} o {dir_sin_hud})")
+        return None
+
+    print("\n" + "=" * 85)
+    print(f"   ANÁLISIS TEMPORAL TURBO: {v_id.upper()} (Batch Size = {batch_size} | Stride = {stride})")
+    print(f"1. Original:    {dir_orig}")
+    print(f"2. Sin HUD:     {dir_sin_hud}")
+    print(f"3. Denoised:    {dir_denoised if tiene_denoised else '[No configurado - Evaluando 2 Estados]'}")
     print("=" * 85)
 
     exts = {".png", ".jpg", ".jpeg"}
-    archivos_sin_hud = sorted([p for p in dir_sin_hud.iterdir() if p.is_file() and p.suffix.lower() in exts], key=natural_key)
-    archivos_eval = archivos_sin_hud[::args.stride]
+    archivos_sin = sorted([p for p in dir_sin_hud.iterdir() if p.is_file() and p.suffix.lower() in exts], key=natural_key)
+    archivos_eval = archivos_sin[::stride]
     total_eval = len(archivos_eval)
 
-    print(f"Frames totales en carpeta: {len(archivos_sin_hud)}")
+    print(f"Frames totales en carpeta: {len(archivos_sin)}")
     print(f"Puntos de muestreo a evaluar en GPU: {total_eval}\n")
 
-    dispositivo = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    m_niqe, m_brisque = crear_metricas_pyiqa(dispositivo, habilitar=True)
-
+    dispositivo = torch.device(device if torch.cuda.is_available() else "cpu")
     registros = []
 
     with torch.inference_mode():
-        for b_idx in tqdm(range(0, total_eval, args.batch_size), desc=f"Procesando {args.video}"):
-            batch_files = archivos_eval[b_idx : b_idx + args.batch_size]
+        for b_idx in tqdm(range(0, total_eval, batch_size), desc=f"Procesando {v_id}"):
+            batch_files = archivos_eval[b_idx : b_idx + batch_size]
 
             t_orig_list, t_sin_list, t_den_list = [], [], []
             info_batch = []
@@ -243,8 +279,7 @@ def main():
                     s_den = estimar_sigma_mad(gr_den)
                     _, l_den = calcular_densidad_estructural(gr_den)
 
-                # Prepara tensores para GPU
-                t_ori_list.append(torch.from_numpy(im_ori).permute(2, 0, 1).float().div(255.0))
+                t_orig_list.append(torch.from_numpy(im_ori).permute(2, 0, 1).float().div(255.0))
                 t_sin_list.append(torch.from_numpy(im_sin).permute(2, 0, 1).float().div(255.0))
                 if im_den is not None:
                     t_den_list.append(torch.from_numpy(im_den).permute(2, 0, 1).float().div(255.0))
@@ -254,7 +289,7 @@ def main():
             if not info_batch:
                 continue
 
-            # Inferencia GPU en Lote
+            # Batch GPU para BRISQUE y NIQE
             b_ori_vals, b_sin_vals, b_den_vals = [0.0] * len(info_batch), [0.0] * len(info_batch), [0.0] * len(info_batch)
             n_ori_vals, n_sin_vals, n_den_vals = [0.0] * len(info_batch), [0.0] * len(info_batch), [0.0] * len(info_batch)
 
@@ -282,14 +317,14 @@ def main():
                 except Exception:
                     pass
 
-            for idx_in_batch, (nom, s_ori, s_sin, l_ori, l_sin, s_den, l_den, has_den) in enumerate(info_batch):
+            for idx_in_b, (nom, s_ori, s_sin, l_ori, l_sin, s_den, l_den, has_den) in enumerate(info_batch):
                 item = {
-                    "frame_idx": (b_idx + idx_in_batch) * args.stride + 1,
+                    "frame_idx": (b_idx + idx_in_b) * stride + 1,
                     "nombre_archivo": nom,
-                    "brisque_orig": round(float(b_ori_vals[idx_in_batch]), 2),
-                    "brisque_sin_hud": round(float(b_sin_vals[idx_in_batch]), 2),
-                    "niqe_orig": round(float(n_ori_vals[idx_in_batch]), 3),
-                    "niqe_sin_hud": round(float(n_sin_vals[idx_in_batch]), 3),
+                    "brisque_orig": round(float(b_ori_vals[idx_in_b]), 2),
+                    "brisque_sin_hud": round(float(b_sin_vals[idx_in_b]), 2),
+                    "niqe_orig": round(float(n_ori_vals[idx_in_b]), 3),
+                    "niqe_sin_hud": round(float(n_sin_vals[idx_in_b]), 3),
                     "sigma_orig": round(s_ori, 4),
                     "sigma_sin_hud": round(s_sin, 4),
                     "var_lap_orig": round(l_ori, 2),
@@ -297,20 +332,68 @@ def main():
                 }
                 if tiene_denoised and has_den:
                     item.update({
-                        "brisque_denoised": round(float(b_den_vals[idx_in_batch]), 2),
-                        "niqe_denoised": round(float(n_den_vals[idx_in_batch]), 3),
+                        "brisque_denoised": round(float(b_den_vals[idx_in_b]), 2),
+                        "niqe_denoised": round(float(n_den_vals[idx_in_b]), 3),
                         "sigma_denoised": round(s_den, 4),
                         "var_lap_denoised": round(l_den, 2),
                     })
                 registros.append(item)
 
-    df = pd.DataFrame(registros)
-    csv_out = RAIZ / f"videos/{args.video}/linea_tiempo_{args.video}.csv"
-    df.to_csv(csv_out, index=False)
-    print(f"\n[+] Tabla CSV exportada a: {csv_out}")
+    if not registros:
+        return None
 
-    png_out = RAIZ / f"figuras_tesis/linea_tiempo/linea_tiempo_{args.video}.png"
-    graficar_comparativa(df, png_out, f"{args.video.upper()}", tiene_denoised=tiene_denoised)
+    df = pd.DataFrame(registros)
+    csv_out = RAIZ / f"videos/{v_id}/linea_tiempo_{v_id}.csv"
+    csv_out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(csv_out, index=False)
+    print(f"[+] Tabla CSV guardada en: {csv_out}")
+
+    png_out = RAIZ / f"figuras_tesis/linea_tiempo/linea_tiempo_{v_id}.png"
+    graficar_comparativa(df, png_out, f"{v_id.upper()}", tiene_denoised=tiene_denoised)
+    return df
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Líneas de Tiempo Turbo de Ruido para Videos 1, 2 y 3")
+    parser.add_argument("--video", default="todos", help="Identificador: video1, video2, video3 o todos")
+    parser.add_argument("--stride-v1", type=int, default=15, help="Stride Video 1")
+    parser.add_argument("--stride-v2", type=int, default=30, help="Stride Video 2")
+    parser.add_argument("--stride-v3", type=int, default=60, help="Stride Video 3")
+    parser.add_argument("--batch-size", type=int, default=16, help="Batch Size GPU")
+    parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu", help="Dispositivo")
+    args = parser.parse_args()
+
+    dispositivo = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    m_niqe, m_brisque = crear_metricas_pyiqa(dispositivo, habilitar=True)
+
+    strides = {
+        "video1": args.stride_v1,
+        "video2": args.stride_v2,
+        "video3": args.stride_v3,
+    }
+
+    dfs_dict = {}
+    videos_a_procesar = ["video1", "video2", "video3"] if args.video == "todos" else [args.video]
+
+    for v in videos_a_procesar:
+        df_v = procesar_un_video(
+            v_id=v,
+            stride=strides.get(v, 30),
+            batch_size=args.batch_size,
+            device=args.device,
+            m_niqe=m_niqe,
+            m_brisque=m_brisque,
+        )
+        if df_v is not None and not df_v.empty:
+            dfs_dict[v] = df_v
+
+    if len(dfs_dict) > 1:
+        comp_png = RAIZ / "figuras_tesis/linea_tiempo/comparativa_ritmo_ruido_3videos.png"
+        graficar_comparativa_multivuelo(dfs_dict, comp_png)
+
+    print("\n" + "=" * 85)
+    print("ANÁLISIS DE LÍNEAS DE TIEMPO COMPLETADO EXITOSAMENTE PARA TODOS LOS VIDEOS.")
+    print("=" * 85)
 
 
 if __name__ == "__main__":
