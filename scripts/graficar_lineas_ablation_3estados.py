@@ -206,10 +206,18 @@ def procesar_un_video(v_id, stride=30, batch_size=16, device="cuda:0", m_niqe=No
         if p_d.is_dir():
             dir_denoised = p_d.resolve()
     elif v_id == "video2":
-        cands = list(RAIZ.glob("videos/video2/expos/*"))
-        cands_v = [c for c in cands if c.is_dir() and len(list(c.glob("*.png")) + list(c.glob("*.jpg"))) > 100]
-        if cands_v:
-            dir_denoised = cands_v[0].resolve()
+        p_u = RAIZ / "videos/video2/expos/udvd_blindspot_corregido_ult10min"
+        if not p_u.is_dir():
+            p_u = RAIZ / "videos/video2/expos/udvd"
+        if not p_u.is_dir():
+            cands = list(RAIZ.glob("videos/video2/expos/*udvd*"))
+            if cands:
+                p_u = cands[0]
+            else:
+                cands_all = [c for c in RAIZ.glob("videos/video2/expos/*") if c.is_dir()]
+                p_u = cands_all[0] if cands_all else None
+        if p_u and p_u.is_dir():
+            dir_denoised = p_u.resolve()
 
     tiene_denoised = dir_denoised is not None and dir_denoised.is_dir()
 

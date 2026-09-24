@@ -151,9 +151,13 @@ def main():
     dir_sin = (RAIZ / args.carpeta_sin_hud).resolve()
 
     if not args.carpeta_denoised:
-        cands = list(RAIZ.glob("videos/video2/expos/*"))
-        cands_v = [c for c in cands if c.is_dir() and len(list(c.glob("*.png")) + list(c.glob("*.jpg"))) > 100]
-        dir_den = cands_v[0] if cands_v else (RAIZ / "videos/video2/expos/udvd_blindspot_corregido_ult10min")
+        p_u = RAIZ / "videos/video2/expos/udvd_blindspot_corregido_ult10min"
+        if not p_u.is_dir():
+            p_u = RAIZ / "videos/video2/expos/udvd"
+        if not p_u.is_dir():
+            cands = list(RAIZ.glob("videos/video2/expos/*udvd*"))
+            p_u = cands[0] if cands else None
+        dir_den = p_u.resolve() if p_u else (RAIZ / "videos/video2/expos/udvd_blindspot_corregido_ult10min")
     else:
         dir_den = (RAIZ / args.carpeta_denoised).resolve()
 
