@@ -83,14 +83,90 @@ def crear_mosaico_comparativo(img_orig_boxes, img_sin_hud, img_udvd, titulo="Com
     return canvas
 
 
+def generar_galeria_automatica(dir_ablation, dir_salida, max_por_clase=2):
+    """Genera automáticamente una galería de mosaicos para el split de test cubriendo todas las clases."""
+    dir_orig = dir_ablation / "1_originales" / "test"
+    dir_sin_hud = dir_ablation / "2_sin_hud" / "test"
+    dir_udvd = dir_ablation / "3_denoised_udvd" / "test"
+
+    if not dir_orig.is_dir():
+        print(f"ERROR: No se encontró {dir_orig}")
+        return
+
+    imgs_orig = sorted(list((dir_orig / "images").glob("*.*")))
+    clases_cubiertas = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+    total_generados = 0
+
+    dir_salida.mkdir(parents=True, exist_ok=True)
+    print(f"Generando galería automática de validación en: {dir_salida}...")
+
+    for img_p in imgs_orig:
+        lbl_p = dir_orig / "labels" / f"{img_p.stem}.txt"
+        if not lbl_p.is_file():
+            continue
+
+        # Leer qué clases contiene esta imagen
+        clases_en_img = set()
+        with open(lbl_p, "r") as f:
+            for l in f:
+                p = l.strip().split()
+                if p:
+                    clases_en_img.add(int(p[0]))
+
+        # Verificar si necesitamos esta imagen para alguna clase
+        necesaria = False
+        for c in clases_en_img:
+            if clases_cubiertas.get(c, 0) < max_por_clase:
+                necesaria = True
+                clases_cubiertas[c] += 1
+
+        if not necesaria and total_generados >= 10:
+            continue
+
+        p_sin_hud = dir_sin_hud / "images" / img_p.name
+        p_udvd = dir_udvd / "images" / img_p.name
+
+        img_o = cv2.imread(str(img_p))
+        img_s = cv2.imread(str(p_sin_hud)) if p_sin_hud.is_file() else img_o
+        img_u = cv2.imread(str(p_udvd)) if p_udvd.is_file() else img_s
+
+        if img_o is None:
+            continue
+
+        h, w = img_o.shape[:2]
+        if img_s is None or img_s.shape[:2] != (h, w):
+            img_s = cv2.resize(img_s if img_s is not None else img_o, (w, h))
+        if img_u is None or img_u.shape[:2] != (h, w):
+            img_u = cv2.resize(img_u if img_u is not None else img_s, (w, h))
+
+        img_boxes = dibujar_cajas_yolo(img_o, lbl_p)
+        mosaico = crear_mosaico_comparativo(img_boxes, img_s, img_u)
+
+        out_path = dir_salida / f"mosaico_{img_p.stem}.png"
+        cv2.imwrite(str(out_path), mosaico, [cv2.IMWRITE_PNG_COMPRESSION, 2])
+        total_generados += 1
+        print(f"  [+] Generado: {out_path.name} (Clases: {[NOMBRES_CLASES.get(c, c) for c in clases_en_img]})")
+
+    print(f"\nGalería completada: {total_generados} mosaicos generados en {dir_salida}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generar Mosaicos de Ablación con Cajas de YOLO")
-    parser.add_argument("--img-orig", required=True, help="Ruta a la imagen original")
-    parser.add_argument("--label-txt", required=True, help="Ruta al archivo .txt con las etiquetas YOLO")
-    parser.add_argument("--img-sin-hud", required=True, help="Ruta a la imagen Sin HUD")
-    parser.add_argument("--img-udvd", required=True, help="Ruta a la imagen Denoised UDVD")
+    parser.add_argument("--img-orig", help="Ruta a la imagen original")
+    parser.add_argument("--label-txt", help="Ruta al archivo .txt con las etiquetas YOLO")
+    parser.add_argument("--img-sin-hud", help="Ruta a la imagen Sin HUD")
+    parser.add_argument("--img-udvd", help="Ruta a la imagen Denoised UDVD")
     parser.add_argument("--salida", default="figuras_tesis/mosaicos_ablation_match.png", help="Ruta del mosaico final")
+    parser.add_argument("--galeria-ablation-dir", default="datasets/ablation_splits", help="Generar galería completa sobre el test set de ablation_splits")
+    parser.add_argument("--galeria-salida-dir", default="figuras_tesis/galeria_ablation", help="Carpeta destino de la galería")
+    parser.add_argument("--auto", action="store_true", help="Generar galería automática de ejemplos de test")
     args = parser.parse_args()
+
+    if args.auto or not args.img_orig:
+        dir_abl = (RAIZ / args.galeria_ablation_dir).resolve()
+        dir_out = (RAIZ / args.galeria_salida_dir).resolve()
+        generar_galeria_automatica(dir_abl, dir_out)
+        return
 
     img_o = cv2.imread(str(Path(args.img_orig).resolve()))
     img_s = cv2.imread(str(Path(args.img_sin_hud).resolve()))
