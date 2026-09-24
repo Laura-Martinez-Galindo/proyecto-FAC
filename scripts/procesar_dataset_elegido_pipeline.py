@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Pipeline Completo de Restauración para el Dataset Elegido de la Tesis (Blindado y Ultra-Robusto):
+Pipeline Completo de Restauración para el Dataset Elegido de la Tesis:
 Aplica la cadena metodológica completa sobre las imágenes de Train, Val y Test:
 1. Rama 1: Original (Cruda con HUD y Ruido).
-2. Rama 2: Sin HUD (Inpainting morfológico fino de telemetría y HUD verde/rojo).
+2. Rama 2: Sin HUD (Inpainting morfológico fino de telemetría y HUD verde/rojo según segmentar_hud.py).
 3. Rama 3: Denoised UDVD Estándar (Dynamic Kernels 5x5, T=5).
 4. Rama 4: Denoised UDVD Mejorado (Dynamic Kernels + Destriping Columnar Anti-FPN).
 5. Generación automática de dataset.yaml para cada rama.
@@ -99,32 +99,6 @@ class DynamicKernelPredictor(nn.Module):
         return filtered
 
 
-def seleccionar_mejor_dispositivo(pref_device="cuda"):
-    if not torch.cuda.is_available() or pref_device == "cpu":
-        return torch.device("cpu")
-    
-    # Buscar la GPU con más memoria libre
-    n_gpus = torch.cuda.device_count()
-    mejor_idx = 0
-    max_libre = 0
-    
-    for i in range(n_gpus):
-        try:
-            libre, total = torch.cuda.mem_get_info(i)
-            print(f"  * GPU {i} ({torch.cuda.get_device_name(i)}): {libre / (1024**3):.2f} GB libres de {total / (1024**3):.2f} GB")
-            if libre > max_libre:
-                max_libre = libre
-                mejor_idx = i
-        except Exception:
-            pass
-
-    dispositivo = torch.device(f"cuda:{mejor_idx}")
-    print(f"[+] Dispositivo seleccionado: {dispositivo} ({max_libre / (1024**3):.2f} GB libres)\n")
-    torch.cuda.empty_cache()
-    gc.collect()
-    return dispositivo
-
-
 def cargar_modelo_udvd(dispositivo):
     modelo = DynamicKernelPredictor(num_frames=5, in_channels=3, kernel_size=5, base_ch=32)
     ckpt_path = RAIZ / "cache/denoising/video2/udvd/modelo.pth"
@@ -198,7 +172,6 @@ def procesar_split(split, dir_in, ramas, modelo_udvd, dispositivo, max_workers=8
             dest_img_3 = ramas["3_udvd_standard"] / split / "images" / img_p.name
             dest_img_4 = ramas["4_udvd_mejorado"] / split / "images" / img_p.name
 
-            # Si ya existen todas, continuar
             if dest_img_2.is_file() and dest_img_3.is_file() and dest_img_4.is_file():
                 continue
 
@@ -206,7 +179,7 @@ def procesar_split(split, dir_in, ramas, modelo_udvd, dispositivo, max_workers=8
             if bgr is None:
                 continue
 
-            # 3. Rama 2: Sin HUD (Inpainting verde + rojo)
+            # 3. Rama 2: Sin HUD
             if dest_img_2.is_file():
                 img_sin_hud_bgr = cv2.imread(str(dest_img_2))
             else:
@@ -255,7 +228,6 @@ def main():
     parser = argparse.ArgumentParser(description="Procesar Dataset Elegido con Pipeline UDVD y HUD")
     parser.add_argument("--dataset-in", default="datasets/dataset_preprocesado_11gb/modelo_yolov11_dataset_completo_preprocesado", help="Ruta al dataset de entrada")
     parser.add_argument("--salida-dir", default="datasets/dataset_ablation_final", help="Directorio raíz para las ramas de ablación generadas")
-    parser.add_argument("--device", default="cuda", help="Dispositivo preferido")
     parser.add_argument("--workers", type=int, default=8, help="Hilos para guardar en disco")
     args = parser.parse_args()
 
@@ -276,7 +248,6 @@ def main():
         config = yaml.safe_load(f)
     clases = config.get("names", {0: "Vehiculos", 1: "Bodegas", 2: "Caminos", 3: "Rios", 4: "Mineria"})
 
-    # Definir 4 ramas
     ramas = {
         "1_original": dir_out_raiz / "1_originales",
         "2_sin_hud": dir_out_raiz / "2_sin_hud",
@@ -290,7 +261,8 @@ def main():
     print(f"Destino:      {dir_out_raiz}")
     print("=" * 85)
 
-    dispositivo = seleccionar_mejor_dispositivo(args.device)
+    dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[+] Dispositivo activo: {dispositivo}")
     modelo_udvd = cargar_modelo_udvd(dispositivo)
 
     # Procesar Test, Val y Train
