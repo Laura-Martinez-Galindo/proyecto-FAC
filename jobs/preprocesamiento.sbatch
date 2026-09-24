@@ -176,19 +176,21 @@ def revisar_fila_excel(nombre_modelo):
             if not fila:
                 continue
 
-            modelo = fila[0] if len(fila) > 0 else None
+            experimento = str(fila[0]).strip().lower() if len(fila) > 0 and fila[0] is not None else ""
+            modelo = str(fila[1]).strip().lower() if len(fila) > 1 and fila[1] is not None else ""
+            target = nombre_modelo.strip().lower()
 
-            if modelo is None:
+            coincide = (target in (experimento, modelo) or 
+                        (target == "original" and "original" in experimento) or 
+                        (target in ("sin hud", "sin_hud") and ("sin_hud" in experimento or "sin hud" in modelo)))
+
+            if not coincide:
                 continue
 
-            if str(modelo).strip().lower() != nombre_modelo.strip().lower():
-                continue
+            frames = fila[4] if len(fila) > 4 else (fila[2] if len(fila) > 2 else None)
+            niqe_media = fila[5] if len(fila) > 5 else (fila[3] if len(fila) > 3 else None)
 
-            frames = fila[2] if len(fila) > 2 else None
-            niqe_media = fila[3] if len(fila) > 3 else None
-            brisque_media = fila[8] if len(fila) > 8 else None
-
-            valida = frames not in (None, 0) and niqe_media is not None and brisque_media is not None
+            valida = frames not in (None, 0) and niqe_media is not None
 
             if valida:
                 return True, f"resumen.xlsx contiene una fila valida para {nombre_modelo}"
