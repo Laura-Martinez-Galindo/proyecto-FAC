@@ -12,15 +12,19 @@ import numpy as np
 RAIZ = Path(__file__).resolve().parent.parent
 
 
-def buscar_frame_mas_cercano(img_ref_bgr, carpeta_frames, step=10):
-    """Busca el frame visualmente idéntico en una carpeta de frames."""
+def buscar_frame_mas_cercano(img_ref_bgr, carpeta_frames, paso_coarse=60):
+    """
+    Búsqueda piramidal ultra-rápida Coarse-to-Fine.
+    Paso 1: Muestrea 1 frame cada 2 segundos (paso=60) -> Menos de 300 lecturas.
+    Paso 2: Refina únicamente en una ventana de +/- 60 frames alrededor del mínimo.
+    """
     if not carpeta_frames.is_dir():
         return None, float("inf"), None
 
     h, w = img_ref_bgr.shape[:2]
     # Zona central (sin HUD en los bordes)
     crop_ref = img_ref_bgr[int(h*0.25):int(h*0.75), int(w*0.25):int(w*0.75)]
-    thumb_ref = cv2.resize(crop_ref, (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
+    thumb_ref = cv2.resize(crop_ref, (48, 27), interpolation=cv2.INTER_AREA).astype(np.float32)
 
     archivos = sorted([p for p in carpeta_frames.iterdir() if p.suffix.lower() in [".png", ".jpg"]])
     if not archivos:
@@ -28,41 +32,44 @@ def buscar_frame_mas_cercano(img_ref_bgr, carpeta_frames, step=10):
 
     mejor_archivo = None
     menor_mae = float("inf")
-    mejor_idx = None
+    mejor_idx = 0
 
-    # Muestreo rápido
-    for idx in range(0, len(archivos), step):
+    total_coarse = len(range(0, len(archivos), paso_coarse))
+    print(f"    -> Escaneando {total_coarse} frames clave (paso={paso_coarse})...")
+
+    # 1. Búsqueda Gruesa (Coarse Search)
+    for idx in range(0, len(archivos), paso_coarse):
         p = archivos[idx]
-        cand = cv2.imread(str(p))
+        cand = cv2.imread(str(p), cv2.IMREAD_REDUCED_COLOR_4)
         if cand is None:
             continue
         h_c, w_c = cand.shape[:2]
         crop_cand = cand[int(h_c*0.25):int(h_c*0.75), int(w_c*0.25):int(w*0.75)]
-        thumb_cand = cv2.resize(crop_cand, (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
+        thumb_cand = cv2.resize(crop_cand, (48, 27), interpolation=cv2.INTER_AREA).astype(np.float32)
 
         mae = float(np.mean(np.abs(thumb_ref - thumb_cand)))
         if mae < menor_mae:
             menor_mae = mae
             mejor_archivo = p
             mejor_idx = idx
-            if mae < 1.5:
-                break
 
-    # Refinamiento local
-    if mejor_idx is not None:
-        sub_inicio = max(0, mejor_idx - step)
-        sub_fin = min(len(archivos), mejor_idx + step + 1)
-        for p in archivos[sub_inicio:sub_fin]:
-            cand = cv2.imread(str(p))
-            if cand is None:
-                continue
-            h_c, w_c = cand.shape[:2]
-            crop_cand = cand[int(h_c*0.25):int(h_c*0.75), int(w_c*0.25):int(w*0.75)]
-            thumb_cand = cv2.resize(crop_cand, (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
-            mae = float(np.mean(np.abs(thumb_ref - thumb_cand)))
-            if mae < menor_mae:
-                menor_mae = mae
-                mejor_archivo = p
+    # 2. Refinamiento Fino (Fine Search en ventana de +/- 60 frames)
+    sub_inicio = max(0, mejor_idx - paso_coarse)
+    sub_fin = min(len(archivos), mejor_idx + paso_coarse + 1)
+    print(f"    -> Refinando en ventana [{sub_inicio}..{sub_fin}] ({sub_fin - sub_inicio} frames)...")
+
+    for p in archivos[sub_inicio:sub_fin]:
+        cand = cv2.imread(str(p), cv2.IMREAD_REDUCED_COLOR_2)
+        if cand is None:
+            continue
+        h_c, w_c = cand.shape[:2]
+        crop_cand = cand[int(h_c*0.25):int(h_c*0.75), int(w_c*0.25):int(w*0.75)]
+        thumb_cand = cv2.resize(crop_cand, (48, 27), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+        mae = float(np.mean(np.abs(thumb_ref - thumb_cand)))
+        if mae < menor_mae:
+            menor_mae = mae
+            mejor_archivo = p
 
     return mejor_archivo, menor_mae, mejor_idx
 
@@ -88,23 +95,22 @@ def main():
     print("=" * 80)
 
     carpetas = [
-        ("Video 1 (Originales)", RAIZ / "videos/video1/frames_originales"),
-        ("Video 1 (Sin HUD)", RAIZ / "videos/video1/frames_sin_hud"),
-        ("Video 2 (Originales)", RAIZ / "videos/video2/frames_originales"),
-        ("Video 2 (Sin HUD)", RAIZ / "videos/video2/frames_sin_hud"),
-        ("Video 3 (Originales)", RAIZ / "videos/video3/frames_originales"),
+        ("Video 1 (Frames Originales)", RAIZ / "videos/video1/frames_originales"),
+        ("Video 2 (Frames Originales)", RAIZ / "videos/video2/frames_originales"),
     ]
 
     for nombre_vid, carpeta in carpetas:
         if not carpeta.is_dir():
+            print(f"  [-] {nombre_vid}: Carpeta no existe en {carpeta}")
             continue
-        match_p, mae, idx = buscar_frame_mas_cercano(img_ref, carpeta, step=10)
+        print(f"\n[*] Analizando {nombre_vid}...")
+        match_p, mae, idx = buscar_frame_mas_cercano(img_ref, carpeta, paso_coarse=60)
         if match_p:
-            print(f"  [+] {nombre_vid:<25} -> Mejor Candidato: {match_p.name} (Diferencia MAE: {mae:.2f})")
-            if mae < 8.0:
-                print(f"      *** MATCH VISUAL CONFIRMADO EN {nombre_vid}: {match_p} ***")
+            print(f"  [+] {nombre_vid:<28} -> Mejor Match: {match_p.name} (Diferencia MAE: {mae:.2f})")
+            if mae < 15.0:
+                print(f"      *** ¡MATCH ENCONTRADO EN {nombre_vid}! Archivo: {match_p.name} ***")
 
-    print("=" * 80)
+    print("\n" + "=" * 80)
 
 
 if __name__ == "__main__":
