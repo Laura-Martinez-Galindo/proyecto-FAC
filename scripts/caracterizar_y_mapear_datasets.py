@@ -162,6 +162,26 @@ def main():
                 resultados.append(res)
 
     imprimir_reporte_completo(resultados)
+    # Verificar disponibilidad de videos limpios en disco
+    print("\n" + "=" * 90)
+    print("      VERIFICACIÓN DE VIDEOS PROCESADOS EN DISCO (HYPATIA)")
+    print("=" * 90)
+    
+    rutas_check = [
+        ("Video 1 (Sin HUD - ProPainter)", RAIZ / "videos/video1/frames_sin_hud"),
+        ("Video 1 (Denoised UDVD)", RAIZ / "videos/video1/expos/udvd_sinhud"),
+        ("Video 2 (Sin HUD - ProPainter)", RAIZ / "videos/video2/frames_sin_hud"),
+        ("Video 2 (Denoised UDVD)", RAIZ / "videos/video2/expos/udvd_sin_hud"),
+        ("Video 3 (Sin HUD - En Proceso)", RAIZ / "videos/video3/frames_sin_hud.tmp"),
+    ]
+    for tag, p in rutas_check:
+        if p.is_dir():
+            n = len(list(p.glob("*.png")) + list(p.glob("*.jpg")))
+            print(f"  [OK] {tag:<35}: {n:,} frames en {p.relative_to(RAIZ)}")
+        else:
+            print(f"  [-] {tag:<35}: No encontrado en {p.relative_to(RAIZ)}")
+            
+    print("=" * 90)
 
     # Exportar a Excel
     ruta_salida = RAIZ / "videos/caracterizacion_datasets_fac.xlsx"
@@ -176,7 +196,7 @@ def main():
             filas = [{"Clase_ID": k, "Nombre": CLASES_MAP.get(k, k), "Total": v} for k, v in r["clases_total"].items()]
             pd.DataFrame(filas).to_excel(writer, sheet_name=r["nombre"][:28] + "_clases", index=False)
 
-    print(f"\n[+] Caracterización guardada exitosamente en: {ruta_salida}")
+    print(f"\n[+] Caracterización guardada exitosamente en: {ruta_salida}\n")
 
 
 if __name__ == "__main__":
