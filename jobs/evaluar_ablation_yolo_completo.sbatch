@@ -3,10 +3,10 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:1
-#SBATCH --mem=16G
-#SBATCH --time=00:20:00
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:2
+#SBATCH --mem=32G
+#SBATCH --time=00:30:00
 #SBATCH --output=jobs/logs/eval_ablation_instancias_%j.out
 #SBATCH --error=jobs/logs/eval_ablation_instancias_%j.err
 
@@ -18,6 +18,8 @@ echo "Evaluacion de Ablacion YOLO: Metricas + Conteo de Instancias"
 echo "Fecha: $(date)"
 echo "Nodo: $(hostname)"
 echo "=========================================================="
+
+nvidia-smi
 
 source fac_env311/bin/activate
 module load cuda/12.1 2>/dev/null || true

@@ -97,21 +97,33 @@ rclone copy "videos/video2/videos_renderizados" "gdrive:proyecto-FAC/videos/vide
 
 echo
 echo "============================================================"
-echo "FASE 3: TERMINAR SUBIDA INDIVIDUAL DE FRAMES ORIGINALES (VIDEO 2)"
+echo "FASE 3: TERMINAR SUBIDA DE FRAMES ORIGINALES (VIDEO 2)"
 echo "============================================================"
 if [[ -d "videos/video2/frames_originales" ]]; then
-    echo "Retomando subida individual de frames_originales (desde el 66%)..."
-    rclone copy "videos/video2/frames_originales" "gdrive:proyecto-FAC/videos/video2/frames_originales" ${RCLONE_FLAGS} || true
+    empaquetar_y_subir "videos/video2/frames_originales" "video2_frames_originales" "gdrive:proyecto-FAC/videos/video2/comprimidos/"
 fi
+
+echo
+echo "============================================================"
+echo "FASE 4: SINCRONIZACIÓN DE VIDEO 3 (FRAMES + COMPRIMIDOS + EXCELS)"
+echo "============================================================"
+
+# Excels y CSVs de Video 3
+rclone copy "videos/video3/resumen.xlsx" "gdrive:proyecto-FAC/videos/video3/" 2>/dev/null || true
+rclone copy "videos/video3/linea_tiempo_video3.csv" "gdrive:proyecto-FAC/videos/video3/" 2>/dev/null || true
+
+# Paquetes de Video 3 en tar.gz
+empaquetar_y_subir "videos/video3/frames_originales" "video3_frames_originales" "gdrive:proyecto-FAC/videos/video3/comprimidos/"
+empaquetar_y_subir "videos/video3/mascaras_hud" "video3_mascaras_hud" "gdrive:proyecto-FAC/videos/video3/comprimidos/"
+empaquetar_y_subir "videos/video3/frames_sin_hud" "video3_frames_sin_hud" "gdrive:proyecto-FAC/videos/video3/comprimidos/"
+empaquetar_y_subir "videos/video3/videos_renderizados" "video3_videos_renderizados" "gdrive:proyecto-FAC/videos/video3/comprimidos/"
+
+# Figuras de Tesis y Reportes
+rclone copy "figuras_tesis" "gdrive:proyecto-FAC/figuras_tesis" ${RCLONE_FLAGS} 2>/dev/null || true
 
 echo
 echo "============================================================"
 echo "SINCRONIZACIÓN FINALIZADA CON ÉXITO: $(date --iso-8601=seconds)"
 echo "============================================================"
 
-echo
-echo "============================================================"
-echo "SINCRONIZACIÓN TOTAL COMPLETADA CON ÉXITO"
-echo "Fin: $(date --iso-8601=seconds)"
-echo "============================================================"
 
