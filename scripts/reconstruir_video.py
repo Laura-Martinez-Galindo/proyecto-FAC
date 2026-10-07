@@ -246,13 +246,17 @@ def main():
     dir_expos = base_video / "expos"
 
     # 1. Buscar modelos disponibles
+    dir_udvd_oficial = base_video / "udvd_sin_hud"
+    if not dir_udvd_oficial.is_dir():
+        dir_udvd_oficial = dir_expos / "udvd_sin_hud"
+    if not dir_udvd_oficial.is_dir():
+        dir_udvd_oficial = dir_expos / "udvd_blindspot_corregido_ult10min"
+
     candidatos = {
         "original": (dir_orig, "Original (Crudo con HUD)"),
         "sin_hud": (dir_sin_hud, "Sin HUD (ProPainter Inpainted)"),
-        "udvd": (dir_expos / "udvd_sin_hud", "UDVD (Dynamic Kernels) [Campeon]"),
-        "blind2unblind": (dir_expos / "blind2unblind_sin_hud", "Blind2Unblind (Espacial 2D)"),
+        "restaurado_final_udvd": (dir_udvd_oficial, "Restaurado Oficial (UDVD + Destriping)"),
         "ensemble": (dir_expos / "ensemble_wavelet_udvd_b2u_sin_hud", "Ensemble Wavelet (UDVD + B2U)"),
-        "struct_n2v": (dir_expos / "struct_n2v_vert_sinhud", "StructN2V Vertical (Anti-FPN)"),
     }
 
     # Revisar carpetas que existan fisicamente
@@ -273,8 +277,17 @@ def main():
             out_file = dir_salida / f"{a.video}_{k}.mp4"
             renderizar_video_individual(frames, out_file, fps=a.fps, titulo=label)
 
-    # B. Renderizar Comparativo Dual (Original vs Sin HUD, y Sin HUD vs UDVD)
+    # B. Renderizar Comparativos Duales (Side-by-Side)
     if a.tipo in ("comparativo_dual", "todos"):
+        # 1. Comparativo Directo: Original (Con HUD) vs Restaurado Final (UDVD Oficial)
+        k_rest = "restaurado_final_udvd" if "restaurado_final_udvd" in disponibles else ("udvd" if "udvd" in disponibles else None)
+        if "original" in disponibles and k_rest:
+            out_dual_final = dir_salida / f"{a.video}_comparativo_side_by_side_original_vs_restaurado.mp4"
+            renderizar_comparativo_dual(
+                disponibles["original"][0], disponibles[k_rest][0],
+                out_dual_final, disponibles["original"][1], disponibles[k_rest][1], fps=a.fps
+            )
+
         if "original" in disponibles and "sin_hud" in disponibles:
             out_dual_1 = dir_salida / f"{a.video}_comparativo_original_vs_sin_hud.mp4"
             renderizar_comparativo_dual(
@@ -282,11 +295,11 @@ def main():
                 out_dual_1, disponibles["original"][1], disponibles["sin_hud"][1], fps=a.fps
             )
 
-        if "sin_hud" in disponibles and "udvd" in disponibles:
+        if "sin_hud" in disponibles and k_rest:
             out_dual_2 = dir_salida / f"{a.video}_comparativo_sin_hud_vs_udvd.mp4"
             renderizar_comparativo_dual(
-                disponibles["sin_hud"][0], disponibles["udvd"][0],
-                out_dual_2, disponibles["sin_hud"][1], disponibles["udvd"][1], fps=a.fps
+                disponibles["sin_hud"][0], disponibles[k_rest][0],
+                out_dual_2, disponibles["sin_hud"][1], disponibles[k_rest][1], fps=a.fps
             )
 
     # C. Renderizar Cuadricula 2x2 (Original | Sin HUD | UDVD | Ensamble o B2U)
