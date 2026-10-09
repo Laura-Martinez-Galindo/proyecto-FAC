@@ -82,10 +82,10 @@ class DynamicKernelPredictor(nn.Module):
             t_center = self.num_frames // 2
             k_center = (self.kernel_size * self.kernel_size) // 2
             idx_centro = t_center * (self.kernel_size * self.kernel_size) + k_center
-            # Colocar logit en -infinito antes del softmax (peso = 0.0)
+            # Colocar logit en -1e4 antes del softmax (peso = 0.0 sin overflow en FP16)
             mascara = torch.ones_like(raw_kernels)
             mascara[:, idx_centro : idx_centro + 1, :, :] = 0.0
-            raw_kernels = raw_kernels.masked_fill(mascara == 0.0, -1e9)
+            raw_kernels = raw_kernels.masked_fill(mascara == 0.0, -1e4)
 
         kernels = torch.softmax(raw_kernels, dim=1)  # (B, T * K*K, H, W)
 
