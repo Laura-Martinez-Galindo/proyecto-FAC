@@ -29,11 +29,10 @@ echo "   Fecha: $(date --iso-8601=seconds)"
 echo "=============================================================================="
 
 # Activar ambiente virtual
-if [[ -f "/opt/anaconda3/etc/profile.d/conda.sh" ]]; then
+if [[ -d "fac_env311" ]]; then
+    source fac_env311/bin/activate
+elif [[ -f "/opt/anaconda3/etc/profile.d/conda.sh" ]]; then
     source "/opt/anaconda3/etc/profile.d/conda.sh"
-    conda activate tesis 2>/dev/null || conda activate base 2>/dev/null || true
-elif [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
-    source "${HOME}/miniconda3/etc/profile.d/conda.sh"
     conda activate tesis 2>/dev/null || conda activate base 2>/dev/null || true
 fi
 
