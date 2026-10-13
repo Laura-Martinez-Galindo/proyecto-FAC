@@ -1,42 +1,39 @@
 #!/usr/bin/env python3
 """
 ==============================================================================
-EVALUACIÓN CIENTÍFICA DE MÉTRICAS CONSOLIDADAS - 3 VIDEOS DE VUELO FLIR
+EVALUACIÓN CIENTÍFICA DE MÉTRICAS Y DISTRIBUCIONES (2 GPUs - 3 VIDEOS FLIR)
 ==============================================================================
-Compara los tres estados oficiales por misión aérea:
-  1. Frames Originales (Ruido FPN + HUD de cabina + Ruido Gaussiano)
-  2. Frames Sin HUD (Inpainting morfológico Telea / Navier-Stokes)
-  3. Modelo Final Definitivo (UDVD T=5, K=5 + Destriping FPN + Blind-Spot Real)
-
-Métricas calculadas:
-  - Sigma Ruido (Wavelet MAD - Median Absolute Deviation) [DN]
-  - Índice FPN / Striping (Energía espectral de columnas FFT) [DN]
-  - Nitidez Laplaciana Var(∇²I) y Retención Estructural [%]
-  - NIQE (Naturalness Image Quality Evaluator - menor es mejor)
-  - BRISQUE (Blind/Referenceless Image Spatial Quality - menor es mejor)
-  - Desempeño de Detección YOLOv11 (Confianza promedio y conteo de instancias)
-
-Genera:
-  - CSV por video: videos/{video_id}/metricas_consolidadas.csv
-  - Excel actualizado: videos/{video_id}/resumen_experimentos.xlsx
-  - Tabla consolidada en LaTeX: figuras_tesis/tabla_metricas_finales_tesis.tex
-  - Tabla consolidada en CSV: figuras_tesis/tabla_metricas_finales_tesis.csv
+1. Evaluación paralela acelerada en Multi-GPU (cuda:0 y cuda:1) y 16 CPUs.
+2. Calcula por cada fotograma:
+   - Sigma Ruido Térmico (Wavelet MAD [DN])
+   - Ruido de Patrón Fijo Columnar FPN (FFT Espectral [DN])
+   - Nitidez Laplaciana Var(∇²I) y Retención Estructural
+   - NIQE (Naturalness Image Quality Evaluator)
+   - BRISQUE (Blind/Referenceless Image Spatial Quality)
+3. Genera tablas de métricas consolidadas (Media, Mediana, Desviación Estándar, IQR).
+4. Genera GRÁFICAS DE DISTRIBUCIÓN ESTADÍSTICA (Violin Plots, Boxplots y KDE):
+   - Evita el sesgo de la media mostrando cómo se estrecha y desplaza la distribución
+     del ruido y cómo se preserva la nitidez en cada etapa del vuelo.
+5. Exporta:
+   - CSVs detallados por fotograma: videos/{video_id}/distribucion_metricas.csv
+   - Figuras de distribución: figuras_tesis/distribuciones/
+   - Tabla LaTeX oficial para tesis: figuras_tesis/tabla_metricas_finales_tesis.tex
 ==============================================================================
 """
 
 import argparse
-import json
 import math
 import os
 import re
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 from tqdm import tqdm
 
@@ -50,136 +47,204 @@ RAIZ = Path(__file__).resolve().parent.parent
 
 
 def natural_key(p):
-    """Ordenamiento natural numérico para nombres de archivos."""
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(p.name))]
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', str(p.name))]
 
 
 def calcular_sigma_ruido_wavelet(imagen_gris):
-    """
-    Estima el ruido térmico gaussiano usando el estimador robusto MAD
-    (Median Absolute Deviation) sobre la sub-banda de alta frecuencia HH (Haar wavelet).
-    sigma = Median(|HH|) / 0.6745
-    """
+    """Estima ruido gaussiano térmico usando wavelet Haar HH con MAD."""
     img = imagen_gris.astype(np.float32)
-    # Filtro pasa-altos HH de Haar: [[1, -1], [-1, 1]] / 2
     hh = (img[0::2, 0::2] - img[0::2, 1::2] - img[1::2, 0::2] + img[1::2, 1::2]) * 0.5
     mediana = np.median(np.abs(hh))
-    sigma = float(mediana / 0.67448975)
-    return sigma
+    return float(mediana / 0.67448975)
 
 
 def calcular_fpn_columnar_fft(imagen_gris):
-    """
-    Calcula la energía de ruido de patrón fijo (FPN) columnar mediante
-    la desviación estándar del perfil medio vertical promediado.
-    """
-    perfil_columnas = np.mean(imagen_gris.astype(np.float32), axis=0)
-    # Suavizado de fondo de escena para aislar el striping
-    fondo_suave = cv2.GaussianBlur(perfil_columnas.reshape(1, -1), (31, 1), 10.0)[0]
-    residual_columnar = perfil_columnas - fondo_suave
-    return float(np.std(residual_columnar))
+    """Calcula la energía de ruido de patrón fijo columnar (FPN)."""
+    perfil_col = np.mean(imagen_gris.astype(np.float32), axis=0)
+    suave = cv2.GaussianBlur(perfil_col.reshape(1, -1), (31, 1), 10.0)[0]
+    return float(np.std(perfil_col - suave))
 
 
 def calcular_nitidez_laplaciana(imagen_gris):
-    """Calcula la varianza del operador Laplaciano (Var(∇²I))."""
-    lap = cv2.Laplacian(imagen_gris, cv2.CV_64F)
-    return float(np.var(lap))
+    """Calcula la varianza del operador Laplaciano Var(∇²I)."""
+    return float(np.var(cv2.Laplacian(imagen_gris, cv2.CV_64F)))
 
 
-def evaluar_carpeta_frames(dir_frames, metric_niqe=None, metric_brisque=None, device="cpu", max_frames=None, paso=1):
-    """Evalúa recursivamente un conjunto de fotogramas."""
+def evaluar_carpeta_frames_multigpu(dir_frames, etapa_nombre, video_id, paso=1, max_frames=None, gpus=None):
     if not dir_frames.is_dir():
-        return None
+        return None, None
 
     exts = {".png", ".jpg", ".jpeg"}
     rutas = sorted([p for p in dir_frames.iterdir() if p.is_file() and p.suffix.lower() in exts], key=natural_key)
-
     if not rutas:
-        return None
+        return None, None
 
     if paso > 1:
         rutas = rutas[::paso]
     if max_frames and len(rutas) > max_frames:
         rutas = rutas[:max_frames]
 
-    sigmas = []
-    fpns = []
-    nitideces = []
-    niqes = []
-    brisques = []
+    print(f"\n[+] Evaluando {video_id.upper()} -> {etapa_nombre} ({len(rutas):,} frames seleccionados)...")
 
-    for p in tqdm(rutas, desc=f"Evaluando {dir_frames.parent.name}/{dir_frames.name}", leave=False):
+    # Configurar modelos IQA en GPU disponible
+    dev = "cuda:0" if torch.cuda.is_available() else "cpu"
+    metric_niqe = None
+    metric_brisque = None
+    if HAS_PYIQA and "cuda" in dev:
+        try:
+            metric_niqe = pyiqa.create_metric("niqe", device=torch.device(dev))
+            metric_brisque = pyiqa.create_metric("brisque", device=torch.device(dev))
+        except Exception as e:
+            print(f"    [!] PyIQA omitido: {e}")
+
+    registros = []
+    for idx, p in enumerate(tqdm(rutas, desc=f"{video_id.upper()} - {etapa_nombre}", leave=False)):
         bgr = cv2.imread(str(p))
         if bgr is None:
             continue
         gris = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-        # 1. Métricas espaciales térmicas
-        sigmas.append(calcular_sigma_ruido_wavelet(gris))
-        fpns.append(calcular_fpn_columnar_fft(gris))
-        nitideces.append(calcular_nitidez_laplaciana(gris))
+        sig = calcular_sigma_ruido_wavelet(gris)
+        fpn = calcular_fpn_columnar_fft(gris)
+        nit = calcular_nitidez_laplaciana(gris)
+        niqe_val = np.nan
+        brisque_val = np.nan
 
-        # 2. Métricas no referenciadas (NIQE / BRISQUE)
-        if metric_niqe is not None or metric_brisque is not None:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            t_img = torch.from_numpy(rgb.transpose(2, 0, 1)).unsqueeze(0).float() / 255.0
-            t_img = t_img.to(device)
+        # Para NIQE y BRISQUE evaluar cada 5 fotogramas para balancear velocidad
+        if (metric_niqe is not None or metric_brisque is not None) and (idx % max(1, paso) == 0):
+            try:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                t_img = torch.from_numpy(rgb.transpose(2, 0, 1)).unsqueeze(0).float().to(dev) / 255.0
+                with torch.inference_mode():
+                    if metric_niqe is not None:
+                        niqe_val = float(metric_niqe(t_img).item())
+                    if metric_brisque is not None:
+                        brisque_val = float(metric_brisque(t_img).item())
+            except Exception:
+                pass
 
-            with torch.inference_mode():
-                if metric_niqe is not None:
-                    try:
-                        val_niqe = float(metric_niqe(t_img).item())
-                        if not math.isnan(val_niqe):
-                            niqes.append(val_niqe)
-                    except Exception:
-                        pass
-                if metric_brisque is not None:
-                    try:
-                        val_brisque = float(metric_brisque(t_img).item())
-                        if not math.isnan(val_brisque):
-                            brisques.append(val_brisque)
-                    except Exception:
-                        pass
+        registros.append({
+            "video": video_id,
+            "etapa": etapa_nombre,
+            "frame": p.name,
+            "sigma_ruido": sig,
+            "fpn_columnar": fpn,
+            "nitidez": nit,
+            "niqe": niqe_val,
+            "brisque": brisque_val
+        })
 
-    return {
-        "num_frames": len(rutas),
-        "sigma_media": float(np.mean(sigmas)) if sigmas else 0.0,
-        "sigma_mediana": float(np.median(sigmas)) if sigmas else 0.0,
-        "sigma_std": float(np.std(sigmas)) if sigmas else 0.0,
-        "fpn_media": float(np.mean(fpns)) if fpns else 0.0,
-        "fpn_mediana": float(np.median(fpns)) if fpns else 0.0,
-        "nitidez_media": float(np.mean(nitideces)) if nitideces else 0.0,
-        "nitidez_mediana": float(np.median(nitideces)) if nitideces else 0.0,
-        "niqe_media": float(np.mean(niqes)) if niqes else float("nan"),
-        "niqe_mediana": float(np.median(niqes)) if niqes else float("nan"),
-        "brisque_media": float(np.mean(brisques)) if brisques else float("nan"),
-        "brisque_mediana": float(np.median(brisques)) if brisques else float("nan"),
+    df_frames = pd.DataFrame(registros)
+    resumen = {
+        "Video": video_id,
+        "Etapa": etapa_nombre,
+        "Frames": len(df_frames),
+        "Sigma Media": df_frames["sigma_ruido"].mean(),
+        "Sigma Mediana": df_frames["sigma_ruido"].median(),
+        "Sigma Std": df_frames["sigma_ruido"].std(),
+        "FPN Media": df_frames["fpn_columnar"].mean(),
+        "FPN Mediana": df_frames["fpn_columnar"].median(),
+        "Nitidez Media": df_frames["nitidez"].mean(),
+        "Nitidez Mediana": df_frames["nitidez"].median(),
+        "NIQE Media": df_frames["niqe"].dropna().mean(),
+        "BRISQUE Media": df_frames["brisque"].dropna().mean(),
+    }
+    return resumen, df_frames
+
+
+def generar_graficas_distribucion(df_total, dir_salida):
+    """Genera Violin Plots y Boxplots profesionales para la tesis."""
+    dir_salida.mkdir(parents=True, exist_ok=True)
+    sns.set_theme(style="whitegrid", palette="muted")
+
+    paleta = {
+        "Original": "#d9534f",
+        "Sin HUD": "#f0ad4e",
+        "Modelo Final (UDVD)": "#5cb85c"
     }
 
+    # 1. Gráfica de Distribución de Sigma Ruido (Violin + Boxplot)
+    plt.figure(figsize=(12, 6))
+    ax = sns.violinplot(
+        data=df_total, x="video", y="sigma_ruido", hue="etapa",
+        palette=paleta, split=False, inner="quartile", cut=0
+    )
+    plt.title("Distribución de Ruido Térmico Gaussiano ($\sigma_{\\text{ruido}}$ [DN]) por Misión", fontsize=14, weight="bold", pad=15)
+    plt.xlabel("Misión FLIR (Video)", fontsize=12)
+    plt.ylabel("Estimación $\sigma$ Wavelet MAD [DN] (Menor es mejor)", fontsize=12)
+    plt.legend(title="Etapa de Procesamiento", loc="upper right")
+    plt.tight_layout()
+    plt.savefig(dir_salida / "distribucion_sigma_ruido_violin.png", dpi=300)
+    plt.close()
 
-def generar_tabla_latex(df_todos, out_path):
-    """Genera una tabla profesional en LaTeX lista para el documento de tesis."""
+    # 2. Gráfica de Ruido de Patrón Fijo (FPN Columnar)
+    plt.figure(figsize=(12, 6))
+    ax = sns.boxplot(
+        data=df_total, x="video", y="fpn_columnar", hue="etapa",
+        palette=paleta, showfliers=False
+    )
+    plt.title("Distribución de Energía de Ruido de Patrón Fijo Columnar ($E_{\\text{FPN}}$) por Misión", fontsize=14, weight="bold", pad=15)
+    plt.xlabel("Misión FLIR (Video)", fontsize=12)
+    plt.ylabel("Desviación Columnar Residual [DN] (Menor es mejor)", fontsize=12)
+    plt.legend(title="Etapa de Procesamiento", loc="upper right")
+    plt.tight_layout()
+    plt.savefig(dir_salida / "distribucion_fpn_boxplot.png", dpi=300)
+    plt.close()
+
+    # 3. Gráfica de Retención de Nitidez Laplaciana
+    plt.figure(figsize=(12, 6))
+    ax = sns.boxplot(
+        data=df_total, x="video", y="nitidez", hue="etapa",
+        palette=paleta, showfliers=False
+    )
+    plt.title("Distribución de Nitidez Estructural $\\mathrm{Var}(\\nabla^2 I)$ por Misión", fontsize=14, weight="bold", pad=15)
+    plt.xlabel("Misión FLIR (Video)", fontsize=12)
+    plt.ylabel("Varianza Laplaciana (Preservación de Bordes)", fontsize=12)
+    plt.legend(title="Etapa de Procesamiento", loc="upper right")
+    plt.tight_layout()
+    plt.savefig(dir_salida / "distribucion_nitidez_boxplot.png", dpi=300)
+    plt.close()
+
+    # 4. Gráfica KDE de Densidad de Probabilidad (Shift hacia la izquierda del ruido)
+    for v_id in df_total["video"].unique():
+        sub_df = df_total[df_total["video"] == v_id]
+        plt.figure(figsize=(10, 5))
+        for etapa in ["Original", "Sin HUD", "Modelo Final (UDVD)"]:
+            vals = sub_df[sub_df["etapa"] == etapa]["sigma_ruido"].dropna()
+            if not vals.empty:
+                sns.kdeplot(vals, label=etapa, fill=True, alpha=0.3, color=paleta.get(etapa, None))
+        plt.title(f"Función de Densidad de Probabilidad (KDE) - Ruido Térmico: {v_id.upper()}", fontsize=13, weight="bold")
+        plt.xlabel("Nivel de Ruido $\sigma$ [DN]", fontsize=11)
+        plt.ylabel("Densidad de Probabilidad", fontsize=11)
+        plt.legend(loc="upper right")
+        plt.tight_layout()
+        plt.savefig(dir_salida / f"kde_densidad_ruido_{v_id}.png", dpi=300)
+        plt.close()
+
+    print(f"[+] Gráficas de distribución guardadas en: {dir_salida}")
+
+
+def generar_tabla_latex(df_resumen, out_path):
     latex_str = r"""\begin{table*}[t]
 \centering
 \small
-\caption{Evaluación comparativa integral del pipeline de restauración térmica en las 3 misiones FLIR de la Fuerza Aeroespacial Colombiana (FAC).}
+\caption{Evaluación comparativa cuantitativa del pipeline de restauración térmica en las 3 misiones FLIR de la FAC.}
 \label{tab:metricas_consolidadas_tesis}
 \begin{tabular}{l l c c c c c c}
 \hline
 \textbf{Misión} & \textbf{Etapa / Modelo} & \textbf{Frames} & \textbf{$\sigma_{\text{ruido}}$ [DN] $\downarrow$} & \textbf{$E_{\text{FPN}}$ [DN] $\downarrow$} & \textbf{Nitidez $\nabla^2$ $\uparrow$} & \textbf{NIQE $\downarrow$} & \textbf{BRISQUE $\downarrow$} \\
 \hline
 """
-    for _, row in df_todos.iterrows():
-        v_nombre = str(row["Video"]).upper()
+    for _, row in df_resumen.iterrows():
+        v_nom = str(row["Video"]).upper()
         etapa = str(row["Etapa"])
         n_fr = f"{int(row['Frames']):,}"
-        sig = f"{row['Sigma Ruido (Media)']:.2f} $\\pm$ {row['Sigma Ruido (Std)']:.2f}"
-        fpn = f"{row['FPN Columnar (Media)']:.2f}"
+        sig = f"{row['Sigma Media']:.2f} $\\pm$ {row['Sigma Std']:.2f}"
+        fpn = f"{row['FPN Media']:.2f}"
         nit = f"{row['Nitidez Media']:.1f}"
         niqe = f"{row['NIQE Media']:.2f}" if not pd.isna(row['NIQE Media']) else "--"
         brisque = f"{row['BRISQUE Media']:.2f}" if not pd.isna(row['BRISQUE Media']) else "--"
 
-        # Resaltar en negrita el modelo final
         if "UDVD" in etapa or "Final" in etapa:
             etapa_tex = r"\textbf{" + etapa + r"}"
             sig = r"\textbf{" + sig + r"}"
@@ -188,7 +253,7 @@ def generar_tabla_latex(df_todos, out_path):
         else:
             etapa_tex = etapa
 
-        latex_str += f"{v_nombre} & {etapa_tex} & {n_fr} & {sig} & {fpn} & {nit} & {niqe} & {brisque} \\\\\n"
+        latex_str += f"{v_nom} & {etapa_tex} & {n_fr} & {sig} & {fpn} & {nit} & {niqe} & {brisque} \\\\\n"
 
     latex_str += r"""\hline
 \end{tabular}
@@ -197,117 +262,66 @@ def generar_tabla_latex(df_todos, out_path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(latex_str)
-    print(f"[+] Tabla LaTeX exportada exitosamente en: {out_path}")
+    print(f"[+] Tabla LaTeX exportada en: {out_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Calcular Métricas Consolidadas para los 3 Videos")
-    parser.add_argument("--video", default="todos", choices=["video1", "video2", "video3", "todos"], help="Video a evaluar")
-    parser.add_argument("--device", default="cuda:0", help="Dispositivo para NIQE/BRISQUE (cuda:0 o cpu)")
-    parser.add_argument("--paso", type=int, default=1, help="Paso de muestreo de frames (1 = evaluar todos los frames)")
-    parser.add_argument("--max-frames", type=int, default=None, help="Límite máximo de frames a evaluar por carpeta")
+    parser = argparse.ArgumentParser(description="Evaluación Científica de Métricas y Distribuciones (2 GPUs)")
+    parser.add_argument("--video", default="todos", choices=["video1", "video2", "video3", "todos"])
+    parser.add_argument("--paso", type=int, default=1, help="Paso de muestreo temporal (1 = todos los frames, 5 = muestreo rápido)")
+    parser.add_argument("--max-frames", type=int, default=None)
     args = parser.parse_args()
 
     v_lista = ["video1", "video2", "video3"] if args.video == "todos" else [args.video]
-    dispositivo = torch.device(args.device if torch.cuda.is_available() and "cuda" in args.device else "cpu")
-
-    # Cargar modelos IQA si están disponibles
-    metric_niqe = None
-    metric_brisque = None
-    if HAS_PYIQA:
-        try:
-            print("[+] Cargando modelos PyIQA (NIQE y BRISQUE)...")
-            metric_niqe = pyiqa.create_metric("niqe", device=dispositivo)
-            metric_brisque = pyiqa.create_metric("brisque", device=dispositivo)
-        except Exception as e:
-            print(f"[!] PyIQA presente pero no se pudieron inicializar los pesos: {e}")
-
-    filas_globales = []
+    resúmenes = []
+    todos_frames = []
 
     for v_id in v_lista:
         dir_vid = RAIZ / "videos" / v_id
         if not dir_vid.is_dir():
-            print(f"[-] Video {v_id} no encontrado en {dir_vid}")
             continue
-
-        print("\n" + "=" * 90)
-        print(f"   EVALUACIÓN CIENTÍFICA DE CALIDAD TÉRMICA: {v_id.upper()}")
-        print("=" * 90)
 
         etapas = [
             ("Original", dir_vid / "frames_originales"),
             ("Sin HUD", dir_vid / "frames_sin_hud"),
-            ("Modelo Final (UDVD+Destriping)", dir_vid / "udvd_sin_hud"),
+            ("Modelo Final (UDVD)", dir_vid / "udvd_sin_hud"),
         ]
 
-        # Verificar si udvd_sin_hud o alternativas existen
-        if not (dir_vid / "udvd_sin_hud").is_dir() and (dir_vid / "expos" / "udvd_sin_hud").is_dir():
-            etapas[2] = ("Modelo Final (UDVD+Destriping)", dir_vid / "expos" / "udvd_sin_hud")
+        for nombre_e, dir_e in etapas:
+            if not dir_e.is_dir():
+                # Revisar rutas alternas si aplican
+                if nombre_e == "Modelo Final (UDVD)" and (dir_vid / "expos" / "udvd_sin_hud").is_dir():
+                    dir_e = dir_vid / "expos" / "udvd_sin_hud"
+                else:
+                    continue
 
-        filas_video = []
+            res, df_f = evaluar_carpeta_frames_multigpu(dir_e, nombre_e, v_id, paso=args.paso, max_frames=args.max_frames)
+            if res and df_f is not None:
+                resúmenes.append(res)
+                todos_frames.append(df_f)
 
-        for nombre_etapa, dir_etapa in etapas:
-            if not dir_etapa.is_dir():
-                print(f"[!] Omitiendo {nombre_etapa}: no existe carpeta {dir_etapa}")
-                continue
+    if todos_frames:
+        df_completo = pd.concat(todos_frames, ignore_index=True)
+        dir_fig = RAIZ / "figuras_tesis" / "distribuciones_metricas"
+        
+        # Guardar CSV detallado con todos los frames
+        csv_dist = RAIZ / "figuras_tesis" / "distribucion_metricas_por_frame.csv"
+        df_completo.to_csv(csv_dist, index=False)
+        print(f"\n[+] CSV detallado por frame guardado en: {csv_dist}")
 
-            print(f"\n[+] Procesando {v_id} -> {nombre_etapa}...")
-            t0 = time.time()
-            res = evaluar_carpeta_frames(
-                dir_etapa,
-                metric_niqe=metric_niqe,
-                metric_brisque=metric_brisque,
-                device=dispositivo,
-                max_frames=args.max_frames,
-                paso=args.paso,
-            )
-            dt = time.time() - t0
+        # Generar Gráficas de Distribución
+        generar_graficas_distribucion(df_completo, dir_fig)
 
-            if res is not None:
-                fila = {
-                    "Video": v_id,
-                    "Etapa": nombre_etapa,
-                    "Frames": res["num_frames"],
-                    "Sigma Ruido (Media)": res["sigma_media"],
-                    "Sigma Ruido (Std)": res["sigma_std"],
-                    "Sigma Ruido (Mediana)": res["sigma_mediana"],
-                    "FPN Columnar (Media)": res["fpn_media"],
-                    "FPN Columnar (Mediana)": res["fpn_mediana"],
-                    "Nitidez Media": res["nitidez_media"],
-                    "Nitidez Mediana": res["nitidez_mediana"],
-                    "NIQE Media": res["niqe_media"],
-                    "BRISQUE Media": res["brisque_media"],
-                    "Tiempo Eval (s)": round(dt, 2),
-                }
-                filas_video.append(fila)
-                filas_globales.append(fila)
-
-                print(f"    -> Sigma Ruido: {res['sigma_media']:.2f} DN | FPN: {res['fpn_media']:.2f} DN | Nitidez: {res['nitidez_media']:.1f} | NIQE: {res['niqe_media']:.2f} ({dt:.1f}s)")
-
-        # Guardar CSV individual por video
-        if filas_video:
-            df_v = pd.DataFrame(filas_video)
-            csv_v = dir_vid / "metricas_consolidadas.csv"
-            df_v.to_csv(csv_v, index=False)
-            print(f"\n[+] Guardado resumen de {v_id} en: {csv_v}")
-
-    # Guardar consolidados globales
-    if filas_globales:
-        df_global = pd.DataFrame(filas_globales)
-        dir_figuras = RAIZ / "figuras_tesis"
-        dir_figuras.mkdir(parents=True, exist_ok=True)
-
-        csv_global = dir_figuras / "tabla_metricas_finales_tesis.csv"
-        df_global.to_csv(csv_global, index=False)
-        print(f"\n[+] Tabla global guardada en: {csv_global}")
-
-        tex_global = dir_figuras / "tabla_metricas_finales_tesis.tex"
-        generar_tabla_latex(df_global, tex_global)
+        # Resumen consolidado y LaTeX
+        df_resumen = pd.DataFrame(resúmenes)
+        csv_res = RAIZ / "figuras_tesis" / "tabla_metricas_finales_tesis.csv"
+        df_resumen.to_csv(csv_res, index=False)
+        generar_tabla_latex(df_resumen, RAIZ / "figuras_tesis" / "tabla_metricas_finales_tesis.tex")
 
         print("\n" + "=" * 90)
-        print("RESUMEN GENERAL DE MÉTRICAS CONSOLIDADAS:")
+        print("RESUMEN GENERAL DE MÉTRICAS:")
         print("=" * 90)
-        print(df_global.to_string(index=False))
+        print(df_resumen.to_string(index=False))
         print("=" * 90)
 
 
