@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #SBATCH --job-name=render_videos
-#SBATCH --partition=express,short
+#SBATCH --partition=short,medium
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32

@@ -275,6 +275,10 @@ def procesar_presentacion(video_id, n_casos=5):
             p_sin = frames_sinhud_dict[p_orig.name]
             im_o = cv2.imread(str(p_orig))
             im_s = cv2.imread(str(p_sin))
+            if im_o is None or im_s is None:
+                return None
+            if im_o.shape[:2] != im_s.shape[:2]:
+                im_s = cv2.resize(im_s, (im_o.shape[1], im_o.shape[0]), interpolation=cv2.INTER_LINEAR)
             if not es_frame_valido(im_o, im_s):
                 return None
             g_o = cv2.cvtColor(im_o, cv2.COLOR_BGR2GRAY)
@@ -351,6 +355,10 @@ def procesar_presentacion(video_id, n_casos=5):
             p_udvd = frames_udvd_dict[p_sin.name]
             im_s = cv2.imread(str(p_sin))
             im_u = cv2.imread(str(p_udvd))
+            if im_s is None or im_u is None:
+                return None
+            if im_s.shape[:2] != im_u.shape[:2]:
+                im_u = cv2.resize(im_u, (im_s.shape[1], im_s.shape[0]), interpolation=cv2.INTER_LINEAR)
             if not es_frame_valido(im_s, im_u):
                 return None
             g_s = cv2.cvtColor(im_s, cv2.COLOR_BGR2GRAY)
