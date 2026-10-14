@@ -102,6 +102,7 @@ def crear_proceso_ffmpeg(ruta_mp4, ancho=1920, alto=1080, fps=30.0):
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "17",
+            "-threads", "0",
             "-pix_fmt", "yuv420p",
             str(ruta_mp4)
         ]
