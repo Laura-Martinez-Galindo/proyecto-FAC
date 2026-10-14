@@ -221,6 +221,36 @@ def generar_graficas_distribucion(df_total, dir_salida):
         plt.savefig(dir_salida / f"kde_densidad_ruido_{v_id}.png", dpi=300)
         plt.close()
 
+    # 5. Gráfica de Calidad Perceptual No-Referencial NIQE
+    if "niqe" in df_total.columns and df_total["niqe"].dropna().count() > 0:
+        plt.figure(figsize=(12, 6))
+        ax = sns.boxplot(
+            data=df_total.dropna(subset=["niqe"]), x="video", y="niqe", hue="etapa",
+            palette=paleta, showfliers=False
+        )
+        plt.title("Distribución de Calidad Perceptual No-Referencial NIQE por Misión", fontsize=14, weight="bold", pad=15)
+        plt.xlabel("Misión FLIR (Video)", fontsize=12)
+        plt.ylabel("Puntaje NIQE (Menor es mejor)", fontsize=12)
+        plt.legend(title="Etapa de Procesamiento", loc="upper right")
+        plt.tight_layout()
+        plt.savefig(dir_salida / "distribucion_niqe_boxplot.png", dpi=300)
+        plt.close()
+
+    # 6. Gráfica de Calidad Perceptual No-Referencial BRISQUE
+    if "brisque" in df_total.columns and df_total["brisque"].dropna().count() > 0:
+        plt.figure(figsize=(12, 6))
+        ax = sns.boxplot(
+            data=df_total.dropna(subset=["brisque"]), x="video", y="brisque", hue="etapa",
+            palette=paleta, showfliers=False
+        )
+        plt.title("Distribución de Calidad Perceptual No-Referencial BRISQUE por Misión", fontsize=14, weight="bold", pad=15)
+        plt.xlabel("Misión FLIR (Video)", fontsize=12)
+        plt.ylabel("Puntaje BRISQUE (Menor es mejor)", fontsize=12)
+        plt.legend(title="Etapa de Procesamiento", loc="upper right")
+        plt.tight_layout()
+        plt.savefig(dir_salida / "distribucion_brisque_boxplot.png", dpi=300)
+        plt.close()
+
     print(f"[+] Gráficas de distribución guardadas en: {dir_salida}")
 
 
