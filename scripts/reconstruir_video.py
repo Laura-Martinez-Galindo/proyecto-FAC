@@ -29,8 +29,8 @@ RUTA_JSON = RAIZ / "config" / "videos.json"
 
 def argumentos():
     p = argparse.ArgumentParser(description="Reconstruccion y comparacion de videos FLIR.")
-    p.add_argument("--video", required=True, help="Identificador del video (video1, video2).")
-    p.add_argument("--tipo", choices=("individual", "comparativo_dual", "comparativo_2x2", "todos"), default="todos",
+    p.add_argument("--video", required=True, help="Identificador del video (video1, video2, video3).")
+    p.add_argument("--tipo", choices=("individual", "comparativo_dual", "comparativo_triple", "comparativo_2x2", "todos"), default="todos",
                    help="Tipo de renderizado a ejecutar.")
     p.add_argument("--fps", type=float, default=30.0, help="Fotogramas por segundo (FPS).")
     p.add_argument("--max-frames", type=int, help="Limite maximo de frames a renderizar.")
@@ -39,6 +39,7 @@ def argumentos():
     p.add_argument("--hasta-frame", type=int, help="Indice final de frame.")
     p.add_argument("--modelos", nargs="+", help="Lista de carpetas o IDs de modelos para el comparativo.")
     p.add_argument("--carpeta-salida", help="Carpeta destino para guardar los videos renderizados.")
+    p.add_argument("--forzar", action="store_true", help="Sobrescribir videos si ya existen previamente.")
     return p.parse_args()
 
 
@@ -69,167 +70,228 @@ def listar_frames(carpeta, max_frames=None, ultimos=None, desde=None, hasta=None
 def agregar_titulo_panel(img, titulo, subtitulo=None):
     """Superpone una barra superior semitransparente con titulo elegante."""
     h, w, _ = img.shape
-    banner_h = 42
+    banner_h = max(28, int(h * 0.08))
     overlay = img.copy()
     cv2.rectangle(overlay, (0, 0), (w, banner_h), (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.75, img, 0.25, 0, img)
     
-    # Linea inferior de acento
+    # Linea inferior de acento naranja FAC
     cv2.line(img, (0, banner_h), (w, banner_h), (0, 165, 255), 2)
 
     # Texto
     texto_completo = f"{titulo}" + (f" | {subtitulo}" if subtitulo else "")
-    cv2.putText(img, texto_completo, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
+    font_scale = max(0.42, banner_h / 58.0)
+    thickness = 1 if font_scale < 0.6 else 2
+    cv2.putText(img, texto_completo, (10, int(banner_h * 0.7)), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
     return img
 
 
-def renderizar_video_individual(rutas_frames, ruta_mp4, fps=30.0, titulo=None):
-    """Renderiza una secuencia de frames en un archivo MP4."""
+def crear_proceso_ffmpeg(ruta_mp4, ancho=1920, alto=1080, fps=30.0):
+    """Crea un proceso ffmpeg para recibir frames crudos por stdin y codificar a MP4 H.264."""
+    ffmpeg = shutil.which("ffmpeg")
+    ruta_mp4.parent.mkdir(parents=True, exist_ok=True)
+    if ffmpeg:
+        cmd = [
+            ffmpeg, "-y",
+            "-f", "rawvideo",
+            "-vcodec", "rawvideo",
+            "-s", f"{ancho}x{alto}",
+            "-pix_fmt", "bgr24",
+            "-r", str(fps),
+            "-i", "-",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "17",
+            "-pix_fmt", "yuv420p",
+            str(ruta_mp4)
+        ]
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL), True
+    else:
+        # Fallback a VideoWriter
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(ruta_mp4), fourcc, fps, (ancho, alto))
+        return writer, False
+
+
+def renderizar_video_individual(rutas_frames, ruta_mp4, fps=30.0, titulo=None, target_w=1920, target_h=1080, forzar=False):
+    """Renderiza una secuencia de frames escalando a Full HD 1080p de alta nitidez."""
     if not rutas_frames:
         print(f"Advertencia: No hay frames para renderizar en {ruta_mp4}")
         return
 
-    if ruta_mp4.is_file() and ruta_mp4.stat().st_size > 1024 * 1024:
-        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo render.")
+    if not forzar and ruta_mp4.is_file() and ruta_mp4.stat().st_size > 10 * 1024 * 1024:
+        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo.")
         return
 
-    primero = cv2.imread(str(rutas_frames[0]))
-    h, w, _ = primero.shape
-    
-    ruta_mp4.parent.mkdir(parents=True, exist_ok=True)
-    temp_avi = ruta_mp4.with_suffix(".temp.avi")
+    proc, es_ffmpeg = crear_proceso_ffmpeg(ruta_mp4, ancho=target_w, alto=target_h, fps=fps)
+    print(f"Renderizando {len(rutas_frames):,} frames a Full HD 1080p -> {ruta_mp4.name}...")
 
-    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-    writer = cv2.VideoWriter(str(temp_avi), fourcc, fps, (w, h))
+    try:
+        for p in tqdm(rutas_frames, desc=f"Video {ruta_mp4.stem}", dynamic_ncols=True):
+            f = cv2.imread(str(p))
+            if f is None:
+                continue
 
-    print(f"Renderizando {len(rutas_frames)} frames -> {ruta_mp4.name}...")
-    for p in tqdm(rutas_frames, desc=f"Video {ruta_mp4.stem}", dynamic_ncols=True):
-        f = cv2.imread(str(p))
-        if f is None:
-            continue
-        if titulo:
-            f = agregar_titulo_panel(f, titulo)
-        writer.write(f)
+            # Escalar con Lanczos para máxima nitidez a 1080p
+            if f.shape[1] != target_w or f.shape[0] != target_h:
+                f = cv2.resize(f, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
 
-    writer.release()
-    convertir_h264(temp_avi, ruta_mp4)
+            if titulo:
+                f = agregar_titulo_panel(f, titulo)
+
+            if es_ffmpeg:
+                proc.stdin.write(f.tobytes())
+            else:
+                proc.write(f)
+    finally:
+        if es_ffmpeg:
+            proc.stdin.close()
+            proc.wait()
+        else:
+            proc.release()
+    print(f"-> Video 1080p completado exitosamente: {ruta_mp4.name}")
 
 
-def renderizar_comparativo_dual(rutas_izq, rutas_der, ruta_mp4, titulo_izq, titulo_der, fps=30.0):
-    """Renderiza video Side-by-Side (1x2) sincronizado."""
+def renderizar_comparativo_dual(rutas_izq, rutas_der, ruta_mp4, titulo_izq, titulo_der, fps=30.0, forzar=False):
+    """Renderiza video Side-by-Side (1x2) nítido sin distorsión de relación de aspecto."""
     n_frames = min(len(rutas_izq), len(rutas_der))
     if n_frames == 0:
         return
 
-    if ruta_mp4.is_file() and ruta_mp4.stat().st_size > 1024 * 1024:
-        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo render.")
+    if not forzar and ruta_mp4.is_file() and ruta_mp4.stat().st_size > 10 * 1024 * 1024:
+        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo.")
         return
 
-    f_izq = cv2.imread(str(rutas_izq[0]))
-    h, w, _ = f_izq.shape
+    # Cada panel a 960x540 (relación 16:9 exacta de los frames FLIR)
+    ancho_panel = 960
+    alto_panel = 540
+    ancho_total = 1920
+    alto_total = 540
 
-    # Redimensionar al 50% de ancho cada uno para mantener relacion de aspecto 16:9 global
-    ancho_panel = w // 2
-    alto_panel = h // 2
+    proc, es_ffmpeg = crear_proceso_ffmpeg(ruta_mp4, ancho=ancho_total, alto=alto_total, fps=fps)
+    print(f"Renderizando Comparativo Dual ({n_frames:,} frames) -> {ruta_mp4.name}...")
 
-    ancho_total = ancho_panel * 2
-    alto_total = alto_panel
+    try:
+        for i in tqdm(range(n_frames), desc="Dual Side-by-Side", dynamic_ncols=True):
+            img_izq = cv2.imread(str(rutas_izq[i]))
+            img_der = cv2.imread(str(rutas_der[i]))
+            if img_izq is None or img_der is None:
+                continue
 
-    ruta_mp4.parent.mkdir(parents=True, exist_ok=True)
-    temp_avi = ruta_mp4.with_suffix(".temp.avi")
+            p_izq = cv2.resize(img_izq, (ancho_panel, alto_panel), interpolation=cv2.INTER_LANCZOS4)
+            p_der = cv2.resize(img_der, (ancho_panel, alto_panel), interpolation=cv2.INTER_LANCZOS4)
 
-    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-    writer = cv2.VideoWriter(str(temp_avi), fourcc, fps, (ancho_total, alto_total))
+            p_izq = agregar_titulo_panel(p_izq, titulo_izq)
+            p_der = agregar_titulo_panel(p_der, titulo_der)
 
-    print(f"Renderizando Comparativo Dual ({n_frames} frames) -> {ruta_mp4.name}...")
-    for i in tqdm(range(n_frames), desc="Dual Side-by-Side", dynamic_ncols=True):
-        img_izq = cv2.imread(str(rutas_izq[i]))
-        img_der = cv2.imread(str(rutas_der[i]))
-        if img_izq is None or img_der is None:
-            continue
-
-        img_izq = agregar_titulo_panel(img_izq, titulo_izq)
-        img_der = agregar_titulo_panel(img_der, titulo_der)
-
-        p_izq = cv2.resize(img_izq, (ancho_panel, alto_panel), interpolation=cv2.INTER_AREA)
-        p_der = cv2.resize(img_der, (ancho_panel, alto_panel), interpolation=cv2.INTER_AREA)
-
-        canvas = np.hstack([p_izq, p_der])
-        writer.write(canvas)
-
-    writer.release()
-    convertir_h264(temp_avi, ruta_mp4)
+            canvas = np.hstack([p_izq, p_der])
+            if es_ffmpeg:
+                proc.stdin.write(canvas.tobytes())
+            else:
+                proc.write(canvas)
+    finally:
+        if es_ffmpeg:
+            proc.stdin.close()
+            proc.wait()
+        else:
+            proc.release()
+    print(f"-> Comparativo Dual completado: {ruta_mp4.name}")
 
 
-def renderizar_comparativo_2x2(listas_rutas, titulos, ruta_mp4, fps=30.0):
-    """
-    Renderiza cuadricula 2x2 sincronizada:
-    [0: Superior Izquierda]  [1: Superior Derecha]
-    [2: Inferior Izquierda]  [3: Inferior Derecha]
-    """
+def renderizar_comparativo_triple(rutas_1, rutas_2, rutas_3, ruta_mp4, titulo_1, titulo_2, titulo_3, fps=30.0, forzar=False):
+    """Renderiza video Tri-Panel 1x3 sincronizado: [Original | Sin HUD | UDVD Final]."""
+    n_frames = min(len(rutas_1), len(rutas_2), len(rutas_3))
+    if n_frames == 0:
+        return
+
+    if not forzar and ruta_mp4.is_file() and ruta_mp4.stat().st_size > 10 * 1024 * 1024:
+        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo.")
+        return
+
+    # Cada panel a 640x360 (relación 16:9 exacta de los frames FLIR)
+    ancho_panel = 640
+    alto_panel = 360
+    ancho_total = 1920
+    alto_total = 360
+
+    proc, es_ffmpeg = crear_proceso_ffmpeg(ruta_mp4, ancho=ancho_total, alto=alto_total, fps=fps)
+    print(f"Renderizando Tri-Panel 1x3 ({n_frames:,} frames) -> {ruta_mp4.name}...")
+
+    try:
+        for i in tqdm(range(n_frames), desc="Triple 1x3 Side-by-Side", dynamic_ncols=True):
+            img_1 = cv2.imread(str(rutas_1[i]))
+            img_2 = cv2.imread(str(rutas_2[i]))
+            img_3 = cv2.imread(str(rutas_3[i]))
+            if img_1 is None or img_2 is None or img_3 is None:
+                continue
+
+            p1 = cv2.resize(img_1, (ancho_panel, alto_panel), interpolation=cv2.INTER_LANCZOS4)
+            p2 = cv2.resize(img_2, (ancho_panel, alto_panel), interpolation=cv2.INTER_LANCZOS4)
+            p3 = cv2.resize(img_3, (ancho_panel, alto_panel), interpolation=cv2.INTER_LANCZOS4)
+
+            p1 = agregar_titulo_panel(p1, titulo_1)
+            p2 = agregar_titulo_panel(p2, titulo_2)
+            p3 = agregar_titulo_panel(p3, titulo_3)
+
+            canvas = np.hstack([p1, p2, p3])
+            if es_ffmpeg:
+                proc.stdin.write(canvas.tobytes())
+            else:
+                proc.write(canvas)
+    finally:
+        if es_ffmpeg:
+            proc.stdin.close()
+            proc.wait()
+        else:
+            proc.release()
+    print(f"-> Tri-Panel 1x3 completado: {ruta_mp4.name}")
+
+
+def renderizar_comparativo_2x2(listas_rutas, titulos, ruta_mp4, fps=30.0, forzar=False):
+    """Renderiza cuadrícula 2x2 Full HD 1080p."""
     n_frames = min(len(l) for l in listas_rutas)
     if n_frames == 0 or len(listas_rutas) < 4:
         return
 
-    if ruta_mp4.is_file() and ruta_mp4.stat().st_size > 1024 * 1024:
-        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo render.")
+    if not forzar and ruta_mp4.is_file() and ruta_mp4.stat().st_size > 10 * 1024 * 1024:
+        print(f"-> [YA EXISTE] {ruta_mp4.name} ({ruta_mp4.stat().st_size / (1024**2):.1f} MB) - Omitiendo.")
         return
 
-    f0 = cv2.imread(str(listas_rutas[0][0]))
-    h, w, _ = f0.shape
+    ancho_p = 960
+    alto_p = 540
+    ancho_total = 1920
+    alto_total = 1080
 
-    # Cada panel al 50% de resolucion
-    ancho_p = w // 2
-    alto_p = h // 2
-    ancho_total = ancho_p * 2
-    alto_total = alto_p * 2
+    proc, es_ffmpeg = crear_proceso_ffmpeg(ruta_mp4, ancho=ancho_total, alto=alto_total, fps=fps)
+    print(f"Renderizando Cuadrícula 2x2 Full HD ({n_frames:,} frames) -> {ruta_mp4.name}...")
 
-    ruta_mp4.parent.mkdir(parents=True, exist_ok=True)
-    temp_avi = ruta_mp4.with_suffix(".temp.avi")
+    try:
+        for i in tqdm(range(n_frames), desc="Comparativo 2x2 1080p", dynamic_ncols=True):
+            paneles = []
+            for idx in range(4):
+                img = cv2.imread(str(listas_rutas[idx][i]))
+                if img is None:
+                    img = np.zeros((alto_p, ancho_p, 3), dtype=np.uint8)
+                else:
+                    img = cv2.resize(img, (ancho_p, alto_p), interpolation=cv2.INTER_LANCZOS4)
+                    img = agregar_titulo_panel(img, titulos[idx])
+                paneles.append(img)
 
-    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-    writer = cv2.VideoWriter(str(temp_avi), fourcc, fps, (ancho_total, alto_total))
+            fila_sup = np.hstack([paneles[0], paneles[1]])
+            fila_inf = np.hstack([paneles[2], paneles[3]])
+            canvas_2x2 = np.vstack([fila_sup, fila_inf])
 
-    print(f"Renderizando Comparativo 2x2 ({n_frames} frames) -> {ruta_mp4.name}...")
-    for i in tqdm(range(n_frames), desc="Comparativo 2x2", dynamic_ncols=True):
-        paneles = []
-        for idx in range(4):
-            img = cv2.imread(str(listas_rutas[idx][i]))
-            img = agregar_titulo_panel(img, titulos[idx])
-            p_res = cv2.resize(img, (ancho_p, alto_p), interpolation=cv2.INTER_AREA)
-            paneles.append(p_res)
-
-        fila_sup = np.hstack([paneles[0], paneles[1]])
-        fila_inf = np.hstack([paneles[2], paneles[3]])
-        canvas_2x2 = np.vstack([fila_sup, fila_inf])
-
-        writer.write(canvas_2x2)
-
-    writer.release()
-    convertir_h264(temp_avi, ruta_mp4)
-
-
-def convertir_h264(temp_avi, ruta_mp4):
-    """Convierte el AVI temporal a MP4 H.264 de alta calidad compatible universalmente."""
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg:
-        comando = [
-            ffmpeg, "-y", "-i", str(temp_avi),
-            "-c:v", "libx264", "-crf", "19", "-preset", "fast",
-            "-pix_fmt", "yuv420p", str(ruta_mp4)
-        ]
-        try:
-            subprocess.run(comando, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            temp_avi.unlink(missing_ok=True)
-            print(f"-> Video final guardado exitosamente: {ruta_mp4}")
-            return
-        except Exception:
-            pass
-    
-    # Fallback si ffmpeg no esta instalado
-    if temp_avi.is_file():
-        temp_avi.replace(ruta_mp4)
-        print(f"-> Video guardado como: {ruta_mp4}")
+            if es_ffmpeg:
+                proc.stdin.write(canvas_2x2.tobytes())
+            else:
+                proc.write(canvas_2x2)
+    finally:
+        if es_ffmpeg:
+            proc.stdin.close()
+            proc.wait()
+        else:
+            proc.release()
+    print(f"-> Cuadrícula 2x2 1080p completada: {ruta_mp4.name}")
 
 
 def main():
@@ -245,7 +307,6 @@ def main():
     dir_sin_hud = base_video / "frames_sin_hud"
     dir_expos = base_video / "expos"
 
-    # 1. Buscar modelos disponibles
     dir_udvd_oficial = base_video / "udvd_sin_hud"
     if not dir_udvd_oficial.is_dir():
         dir_udvd_oficial = dir_expos / "udvd_sin_hud"
@@ -259,7 +320,7 @@ def main():
         "ensemble": (dir_expos / "ensemble_wavelet_udvd_b2u_sin_hud", "Ensemble Wavelet (UDVD + B2U)"),
     }
 
-    # Revisar carpetas que existan fisicamente
+    # Revisar carpetas que existan físicamente
     disponibles = {}
     for k, (carpeta, label) in candidatos.items():
         if carpeta.is_dir():
@@ -267,61 +328,62 @@ def main():
             if frames:
                 disponibles[k] = (frames, label)
 
-    print(f"=== RECONSTRUCCION DE VIDEOS: {a.video.upper()} ===")
+    print(f"=== RECONSTRUCCIÓN DE VIDEOS: {a.video.upper()} ===")
     print(f"Modelos detectados: {list(disponibles.keys())}")
     print(f"Carpeta de salida: {dir_salida}")
+    print(f"Sobrescribir forzado: {a.forzar}")
 
-    # A. Renderizar Videos Individuales
+    k_rest = "restaurado_final_udvd" if "restaurado_final_udvd" in disponibles else ("udvd" if "udvd" in disponibles else None)
+
+    # A. Renderizar Videos Individuales Clave (Full HD 1080p Lanczos)
+    # Solo renderizamos sin_hud y restaurado_final_udvd para evitar videos redundantes de 20 GB
     if a.tipo in ("individual", "todos"):
-        for k, (frames, label) in disponibles.items():
-            out_file = dir_salida / f"{a.video}_{k}.mp4"
-            renderizar_video_individual(frames, out_file, fps=a.fps, titulo=label)
+        for k in ("sin_hud", "restaurado_final_udvd"):
+            if k in disponibles:
+                frames, label = disponibles[k]
+                out_file = dir_salida / f"{a.video}_{k}.mp4"
+                renderizar_video_individual(frames, out_file, fps=a.fps, titulo=label, forzar=a.forzar)
 
-    # B. Renderizar Comparativos Duales (Side-by-Side)
+    # B. Renderizar Tri-Panel 1x3 [Original | Sin HUD | UDVD Final]
+    if a.tipo in ("comparativo_triple", "todos"):
+        if "original" in disponibles and "sin_hud" in disponibles and k_rest:
+            out_triple = dir_salida / f"{a.video}_comparativo_triple_1x3.mp4"
+            renderizar_comparativo_triple(
+                disponibles["original"][0], disponibles["sin_hud"][0], disponibles[k_rest][0],
+                out_triple,
+                disponibles["original"][1], disponibles["sin_hud"][1], disponibles[k_rest][1],
+                fps=a.fps, forzar=a.forzar
+            )
+
+    # C. Renderizar Comparativo Dual (Side-by-Side: Original vs Restaurado Final)
     if a.tipo in ("comparativo_dual", "todos"):
-        # 1. Comparativo Directo: Original (Con HUD) vs Restaurado Final (UDVD Oficial)
-        k_rest = "restaurado_final_udvd" if "restaurado_final_udvd" in disponibles else ("udvd" if "udvd" in disponibles else None)
         if "original" in disponibles and k_rest:
             out_dual_final = dir_salida / f"{a.video}_comparativo_side_by_side_original_vs_restaurado.mp4"
             renderizar_comparativo_dual(
                 disponibles["original"][0], disponibles[k_rest][0],
-                out_dual_final, disponibles["original"][1], disponibles[k_rest][1], fps=a.fps
+                out_dual_final, disponibles["original"][1], disponibles[k_rest][1],
+                fps=a.fps, forzar=a.forzar
             )
 
-        if "original" in disponibles and "sin_hud" in disponibles:
-            out_dual_1 = dir_salida / f"{a.video}_comparativo_original_vs_sin_hud.mp4"
-            renderizar_comparativo_dual(
-                disponibles["original"][0], disponibles["sin_hud"][0],
-                out_dual_1, disponibles["original"][1], disponibles["sin_hud"][1], fps=a.fps
-            )
-
-        if "sin_hud" in disponibles and k_rest:
-            out_dual_2 = dir_salida / f"{a.video}_comparativo_sin_hud_vs_udvd.mp4"
-            renderizar_comparativo_dual(
-                disponibles["sin_hud"][0], disponibles[k_rest][0],
-                out_dual_2, disponibles["sin_hud"][1], disponibles[k_rest][1], fps=a.fps
-            )
-
-    # C. Renderizar Cuadricula 2x2 (Original | Sin HUD | UDVD | Ensamble o B2U)
-    if a.tipo in ("comparativo_2x2", "todos"):
+    # D. Renderizar Cuadrícula 2x2 (Solo si se pide explícitamente con --tipo comparativo_2x2)
+    if a.tipo == "comparativo_2x2":
         keys_2x2 = ["original", "sin_hud", "udvd"]
         if "ensemble" in disponibles:
             keys_2x2.append("ensemble")
         elif "blind2unblind" in disponibles:
             keys_2x2.append("blind2unblind")
-        elif "struct_n2v" in disponibles:
-            keys_2x2.append("struct_n2v")
 
         if len(keys_2x2) == 4 and all(k in disponibles for k in keys_2x2):
             out_2x2 = dir_salida / f"{a.video}_comparativo_cuadricula_2x2.mp4"
             listas = [disponibles[k][0] for k in keys_2x2]
             labels = [disponibles[k][1] for k in keys_2x2]
-            renderizar_comparativo_2x2(listas, labels, out_2x2, fps=a.fps)
+            renderizar_comparativo_2x2(listas, labels, out_2x2, fps=a.fps, forzar=a.forzar)
 
     print("\n============================================================")
-    print(f"TODOS LOS VIDEOS RENDERIZADOS CON EXITO EN: {dir_salida}")
+    print(f"VIDEOS FINALIZADOS CON ÉXITO EN: {dir_salida}")
     print("============================================================")
 
 
 if __name__ == "__main__":
     main()
+

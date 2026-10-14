@@ -17,8 +17,9 @@ set -euo pipefail
 trap 'codigo=$?; echo "ERROR en linea ${LINENO}: ${BASH_COMMAND}" >&2; exit "${codigo}"' ERR
 
 VIDEO_ID="${1:-video2}"
-TIPO="${2:-todos}"  # todos, individual, comparativo_dual, comparativo_2x2
+TIPO="${2:-todos}"  # todos, individual, comparativo_triple, comparativo_dual, comparativo_2x2
 MAX_FRAMES="${3:-}" # Opcional, ej: 18000 o vacio para todos
+FORZAR_FLAG="${4:---forzar}" # Por defecto sobrescribe renders antiguos de baja resolucion
 
 RUTA_PROYECTO="${SLURM_SUBMIT_DIR:-$(pwd)}"
 RUTA_PYTHON="${RUTA_PROYECTO}/fac_env311/bin/python"
@@ -27,8 +28,9 @@ cd "${RUTA_PROYECTO}"
 mkdir -p jobs/logs "videos/${VIDEO_ID}/videos_renderizados"
 
 echo "============================================================"
-echo "RECONSTRUCCIÓN Y RENDERIZADO DE VIDEOS FLIR (SIDE-BY-SIDE)"
+echo "🎬 RECONSTRUCCIÓN Y RENDERIZADO FULL HD 1080p FLIR"
 echo "Video: ${VIDEO_ID} | Modo: ${TIPO} | Limite: ${MAX_FRAMES:-Completo}"
+echo "Sobrescribir: ${FORZAR_FLAG}"
 echo "Inicio: $(date --iso-8601=seconds)"
 echo "============================================================"
 
@@ -41,30 +43,22 @@ fi
     --video "${VIDEO_ID}" \
     --tipo "${TIPO}" \
     --fps 30.0 \
-    ${PARAM_FRAMES}
+    ${PARAM_FRAMES} \
+    ${FORZAR_FLAG}
 
 echo
 echo "============================================================"
-echo "EMPAQUETANDO Y SUBIENDO VIDEOS A GOOGLE DRIVE"
+echo "☁️ SUBIENDO VIDEOS .MP4 A GOOGLE DRIVE"
 echo "============================================================"
 
 DIR_RENDER="videos/${VIDEO_ID}/videos_renderizados"
-DIR_COMPRIMIDOS="videos/comprimidos"
-TAR_VIDEOS="${DIR_COMPRIMIDOS}/${VIDEO_ID}_videos_renderizados.tar.gz"
-
-mkdir -p "${DIR_COMPRIMIDOS}"
-
-echo "--- 1. Creando paquete comprimido ${TAR_VIDEOS} ---"
-tar -cf - -C "videos/${VIDEO_ID}" "videos_renderizados" | gzip -1 > "${TAR_VIDEOS}"
+sync
 
 if command -v rclone &> /dev/null; then
-    RCLONE_FLAGS="--transfers 32 --checkers 64 --drive-chunk-size 64M --buffer-size 64M --fast-list --progress"
+    RCLONE_FLAGS="--transfers 16 --checkers 32 --drive-chunk-size 64M --buffer-size 64M --fast-list --progress"
     
-    echo "--- 2. Subiendo videos .mp4 individuales a Google Drive (visibles/reproducibles) ---"
+    echo "--- Subiendo videos .mp4 Full HD a Google Drive (reproducibles directamente) ---"
     rclone copy "${DIR_RENDER}" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/videos_renderizados/" ${RCLONE_FLAGS} || true
-    
-    echo "--- 3. Subiendo archivo comprimido ${TAR_VIDEOS} a Google Drive ---"
-    rclone copy "${TAR_VIDEOS}" "gdrive:proyecto-FAC/videos/${VIDEO_ID}/comprimidos/" ${RCLONE_FLAGS} || true
 else
     echo "Advertencia: rclone no esta disponible en PATH para subida automatica."
 fi

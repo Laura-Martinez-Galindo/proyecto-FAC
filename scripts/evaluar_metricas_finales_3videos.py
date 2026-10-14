@@ -169,9 +169,9 @@ def generar_graficas_distribucion(df_total, dir_salida):
         data=df_total, x="video", y="sigma_ruido", hue="etapa",
         palette=paleta, split=False, inner="quartile", cut=0
     )
-    plt.title("Distribución de Ruido Térmico Gaussiano ($\sigma_{\\text{ruido}}$ [DN]) por Misión", fontsize=14, weight="bold", pad=15)
+    plt.title(r"Distribución de Ruido Térmico Gaussiano ($\sigma_{\text{ruido}}$ [DN]) por Misión", fontsize=14, weight="bold", pad=15)
     plt.xlabel("Misión FLIR (Video)", fontsize=12)
-    plt.ylabel("Estimación $\sigma$ Wavelet MAD [DN] (Menor es mejor)", fontsize=12)
+    plt.ylabel(r"Estimación $\sigma$ Wavelet MAD [DN] (Menor es mejor)", fontsize=12)
     plt.legend(title="Etapa de Procesamiento", loc="upper right")
     plt.tight_layout()
     plt.savefig(dir_salida / "distribucion_sigma_ruido_violin.png", dpi=300)
@@ -183,7 +183,7 @@ def generar_graficas_distribucion(df_total, dir_salida):
         data=df_total, x="video", y="fpn_columnar", hue="etapa",
         palette=paleta, showfliers=False
     )
-    plt.title("Distribución de Energía de Ruido de Patrón Fijo Columnar ($E_{\\text{FPN}}$) por Misión", fontsize=14, weight="bold", pad=15)
+    plt.title(r"Distribución de Energía de Ruido de Patrón Fijo Columnar ($E_{\text{FPN}}$) por Misión", fontsize=14, weight="bold", pad=15)
     plt.xlabel("Misión FLIR (Video)", fontsize=12)
     plt.ylabel("Desviación Columnar Residual [DN] (Menor es mejor)", fontsize=12)
     plt.legend(title="Etapa de Procesamiento", loc="upper right")
@@ -197,7 +197,7 @@ def generar_graficas_distribucion(df_total, dir_salida):
         data=df_total, x="video", y="nitidez", hue="etapa",
         palette=paleta, showfliers=False
     )
-    plt.title("Distribución de Nitidez Estructural $\\mathrm{Var}(\\nabla^2 I)$ por Misión", fontsize=14, weight="bold", pad=15)
+    plt.title(r"Distribución de Nitidez Estructural $\mathrm{Var}(\nabla^2 I)$ por Misión", fontsize=14, weight="bold", pad=15)
     plt.xlabel("Misión FLIR (Video)", fontsize=12)
     plt.ylabel("Varianza Laplaciana (Preservación de Bordes)", fontsize=12)
     plt.legend(title="Etapa de Procesamiento", loc="upper right")
@@ -214,7 +214,7 @@ def generar_graficas_distribucion(df_total, dir_salida):
             if not vals.empty:
                 sns.kdeplot(vals, label=etapa, fill=True, alpha=0.3, color=paleta.get(etapa, None))
         plt.title(f"Función de Densidad de Probabilidad (KDE) - Ruido Térmico: {v_id.upper()}", fontsize=13, weight="bold")
-        plt.xlabel("Nivel de Ruido $\sigma$ [DN]", fontsize=11)
+        plt.xlabel(r"Nivel de Ruido $\sigma$ [DN]", fontsize=11)
         plt.ylabel("Densidad de Probabilidad", fontsize=11)
         plt.legend(loc="upper right")
         plt.tight_layout()
@@ -300,16 +300,29 @@ def main():
                 resúmenes.append(res)
                 todos_frames.append(df_f)
 
+                # Guardado incremental inmediato para no perder progreso
+                df_acum = pd.concat(todos_frames, ignore_index=True)
+                dir_fig = RAIZ / "figuras_tesis" / "distribuciones_metricas"
+                dir_fig.mkdir(parents=True, exist_ok=True)
+                df_acum.to_csv(RAIZ / "figuras_tesis" / "distribucion_metricas_por_frame.csv", index=False)
+                df_res_acum = pd.DataFrame(resúmenes)
+                df_res_acum.to_csv(RAIZ / "figuras_tesis" / "tabla_metricas_finales_tesis.csv", index=False)
+                generar_tabla_latex(df_res_acum, RAIZ / "figuras_tesis" / "tabla_metricas_finales_tesis.tex")
+                try:
+                    generar_graficas_distribucion(df_acum, dir_fig)
+                except Exception as e:
+                    print(f"    [!] Graficas temporales omitidas: {e}")
+
     if todos_frames:
         df_completo = pd.concat(todos_frames, ignore_index=True)
         dir_fig = RAIZ / "figuras_tesis" / "distribuciones_metricas"
         
-        # Guardar CSV detallado con todos los frames
+        # Guardar CSV definitivo con todos los frames
         csv_dist = RAIZ / "figuras_tesis" / "distribucion_metricas_por_frame.csv"
         df_completo.to_csv(csv_dist, index=False)
         print(f"\n[+] CSV detallado por frame guardado en: {csv_dist}")
 
-        # Generar Gráficas de Distribución
+        # Generar Gráficas de Distribución definitivas
         generar_graficas_distribucion(df_completo, dir_fig)
 
         # Resumen consolidado y LaTeX
