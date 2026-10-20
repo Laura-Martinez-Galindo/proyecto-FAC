@@ -68,7 +68,65 @@ def extraer_numero_frame(nombre_archivo):
     return int(match.group(1)) if match else 0
 
 
-def caracterizar_y_contar_regimenes(carpeta_frames, salida_csv, generar_graficas=True):
+def procesar_un_frame(ruta):
+    """Procesa un único fotograma extrayendo sus descriptores físicos y de HUD."""
+    img = cv2.imread(str(ruta))
+    if img is None:
+        return None
+
+    h, w, _ = img.shape
+    # Zona central de la escena (lejos del HUD perimetral)
+    escena = img[int(h * 0.2) : int(h * 0.8), int(w * 0.2) : int(w * 0.8)]
+    b, g, r = cv2.split(escena.astype(np.float32))
+    gray_escena = cv2.cvtColor(escena, cv2.COLOR_BGR2GRAY)
+
+    # 1. Métricas físicas de la escena
+    # delta_rgb: si es térmico puro (monocromático codificado en 3 canales), delta_rgb ~ 0
+    delta_rgb = float(np.median(np.abs(r - g) + np.abs(g - b)))
+
+    # contraste_iqr: rango intercuartílico de intensidad (bruma/HAZE comprime el IQR)
+    p75 = np.percentile(gray_escena, 75)
+    p25 = np.percentile(gray_escena, 25)
+    contraste_iqr = float(p75 - p25)
+
+    # Gradiente de alta frecuencia (detecta DDE / ruido de bordes estirado)
+    lap = np.abs(cv2.Laplacian(gray_escena, cv2.CV_32F))
+    energia_bordes = float(np.median(lap))
+
+    # Brillo mediano de la escena
+    brillo_mediano = float(np.median(gray_escena))
+
+    # 2. Análisis del bloque inferior izquierdo (HUD)
+    _, lineas_hud, densidad_hud = extraer_firma_esquina_inferior_izquierda(img)
+
+    # 3. Lógica heurística robusta combinada
+    if delta_rgb < 0.6:
+        sensor_modo = "HDIR_Termico"
+    elif contraste_iqr < 25.0:
+        sensor_modo = "HDEO_Optico_HAZE"
+    elif energia_bordes > 12.0:
+        sensor_modo = "HDEO_Optico_DDE_Activo"
+    else:
+        sensor_modo = "HDEO_Optico_Estandar"
+
+    frame_num = extraer_numero_frame(ruta.name)
+
+    return {
+        "frame_idx": frame_num,
+        "archivo": ruta.name,
+        "sensor_modo_estimado": sensor_modo,
+        "delta_rgb": round(delta_rgb, 3),
+        "contraste_iqr": round(contraste_iqr, 2),
+        "energia_bordes": round(energia_bordes, 3),
+        "brillo_mediano": round(brillo_mediano, 2),
+        "lineas_hud_activas": lineas_hud,
+        "densidad_hud": round(densidad_hud, 4),
+    }
+
+
+def caracterizar_y_contar_regimenes(carpeta_frames, salida_csv, generar_graficas=True, trabajadores=8, paso=1):
+    from concurrent.futures import ThreadPoolExecutor
+
     carpeta_p = Path(carpeta_frames)
     if not carpeta_p.exists():
         raise FileNotFoundError(f"La carpeta especificada no existe: {carpeta_frames}")
@@ -86,63 +144,23 @@ def caracterizar_y_contar_regimenes(carpeta_frames, salida_csv, generar_graficas
 
     # Ordenar numéricamente por número de frame
     rutas = sorted(rutas, key=lambda p: extraer_numero_frame(p.name))
-    print(f"\n[INFO] Analizando {len(rutas)} fotogramas en: {carpeta_frames}")
+    if paso > 1:
+        rutas = rutas[::paso]
+        print(f"[INFO] Aplicando paso (stride) de {paso}. Muestreando {len(rutas)} fotogramas.")
+
+    print(f"\n[INFO] Analizando {len(rutas)} fotogramas con {trabajadores} hilos paralelos...")
 
     datos_frames = []
 
-    for ruta in tqdm(rutas, desc="Analizando fotogramas"):
-        img = cv2.imread(str(ruta))
-        if img is None:
-            continue
-
-        h, w, _ = img.shape
-        # Zona central de la escena (lejos del HUD perimetral)
-        escena = img[int(h * 0.2) : int(h * 0.8), int(w * 0.2) : int(w * 0.8)]
-        b, g, r = cv2.split(escena.astype(np.float32))
-        gray_escena = cv2.cvtColor(escena, cv2.COLOR_BGR2GRAY)
-
-        # 1. Métricas físicas de la escena
-        # delta_rgb: si es térmico puro (monocromático codificado en 3 canales), delta_rgb ~ 0
-        delta_rgb = float(np.median(np.abs(r - g) + np.abs(g - b)))
-
-        # contraste_iqr: rango intercuartílico de intensidad (bruma/HAZE comprime el IQR)
-        p75 = np.percentile(gray_escena, 75)
-        p25 = np.percentile(gray_escena, 25)
-        contraste_iqr = float(p75 - p25)
-
-        # Gradiente de alta frecuencia (detecta DDE / ruido de bordes estirado)
-        lap = np.abs(cv2.Laplacian(gray_escena, cv2.CV_32F))
-        energia_bordes = float(np.median(lap))
-
-        # Brillo mediano de la escena
-        brillo_mediano = float(np.median(gray_escena))
-
-        # 2. Análisis del bloque inferior izquierdo (HUD)
-        _, lineas_hud, densidad_hud = extraer_firma_esquina_inferior_izquierda(img)
-
-        # 3. Lógica heurística robusta combinada
-        if delta_rgb < 0.6:
-            sensor_modo = "HDIR_Termico"
-        elif contraste_iqr < 25.0:
-            sensor_modo = "HDEO_Optico_HAZE"
-        elif energia_bordes > 12.0:
-            sensor_modo = "HDEO_Optico_DDE_Activo"
-        else:
-            sensor_modo = "HDEO_Optico_Estandar"
-
-        frame_num = extraer_numero_frame(ruta.name)
-
-        datos_frames.append({
-            "frame_idx": frame_num,
-            "archivo": ruta.name,
-            "sensor_modo_estimado": sensor_modo,
-            "delta_rgb": round(delta_rgb, 3),
-            "contraste_iqr": round(contraste_iqr, 2),
-            "energia_bordes": round(energia_bordes, 3),
-            "brillo_mediano": round(brillo_mediano, 2),
-            "lineas_hud_activas": lineas_hud,
-            "densidad_hud": round(densidad_hud, 4),
-        })
+    if trabajadores > 1:
+        with ThreadPoolExecutor(max_workers=trabajadores) as executor:
+            resultados = list(tqdm(executor.map(procesar_un_frame, rutas), total=len(rutas), desc="Analizando fotogramas (multihilo)"))
+            datos_frames = [r for r in resultados if r is not None]
+    else:
+        for ruta in tqdm(rutas, desc="Analizando fotogramas"):
+            res = procesar_un_frame(ruta)
+            if res is not None:
+                datos_frames.append(res)
 
     df = pd.DataFrame(datos_frames)
     if df.empty:
@@ -367,6 +385,18 @@ def main():
         help="Ruta del CSV de salida (por defecto: conteo_regimenes_detectados.csv).",
     )
     parser.add_argument(
+        "--trabajadores",
+        type=int,
+        default=8,
+        help="Número de hilos paralelos para procesar imágenes (por defecto: 8).",
+    )
+    parser.add_argument(
+        "--paso",
+        type=int,
+        default=1,
+        help="Paso de muestreo de fotogramas (stride). Por defecto 1 (analiza todos los frames).",
+    )
+    parser.add_argument(
         "--sin-graficas",
         action="store_true",
         help="Desactiva la generación de gráficas (útil si no hay matplotlib o se quiere máxima velocidad).",
@@ -377,6 +407,8 @@ def main():
         carpeta_frames=args.carpeta,
         salida_csv=args.salida,
         generar_graficas=not args.sin_graficas,
+        trabajadores=args.trabajadores,
+        paso=args.paso,
     )
 
 
