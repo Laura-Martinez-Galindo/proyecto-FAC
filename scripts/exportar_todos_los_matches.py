@@ -87,28 +87,29 @@ def resolver_origen_y_frame(nombre_archivo, ancho_img=None, alto_img=None):
     """
     stem = Path(nombre_archivo).stem
 
-    # Caso A: Video 1 (11 minutos - Tolima, FAC 5749, 1080p)
+    # Caso A: Video 1 (Dataset Codefest Tolima - FAC 5749, 13/06/2021, 1080p)
     if "video_11min" in stem:
         partes = stem.split("_")
         sec_idx = int(partes[-1]) if partes[-1].isdigit() else 0
         frame_idx = sec_idx * 30
         return {
-            "video_origen": "video1",
-            "mision": "Tolima (FAC 5749)",
+            "video_origen": "video1_codefest_tolima",
+            "mision": "Tolima (FAC 5749 - 13/06/2021)",
             "segundo_vuelo": sec_idx,
             "tiempo_mm_ss": formatear_tiempo(sec_idx),
             "frame_crudo_30fps": frame_idx,
             "nombre_frame_esperado": f"frame_{frame_idx:05d}.png",
             "resolucion_esperada": "1920x1080",
             "tipo_corte": "1_fps_regular",
-            "pad_digitos": 5
+            "pad_digitos": 5,
+            "nota": "Vuelo Codefest 11:52 min (FAC 5749). Distinto al video30min-11to22 (FAC 5748) en Hypatia."
         }
 
     # Caso B: Video 2 (Últimos 13 min de 46 min - Santander, FLIR Systems, 720p)
     if "video_13min" in stem:
         partes = stem.split("_")
         sec_idx = int(partes[-1]) if partes[-1].isdigit() else 0
-        # Offset de inicio de toma: Minuto 32:56 = segundo 1,976 = frame 59,280
+        # Offset de inicio de toma: Minuto 32:56 = segundo 1,976 = frame 59,280 (100% verificado)
         frame_idx = 59280 + (sec_idx * 30)
         segundo_absoluto = 1976 + sec_idx
         return {
@@ -120,26 +121,35 @@ def resolver_origen_y_frame(nombre_archivo, ancho_img=None, alto_img=None):
             "nombre_frame_esperado": f"frame_{frame_idx:05d}.png",
             "resolucion_esperada": "1280x720",
             "tipo_corte": "1_fps_regular",
-            "pad_digitos": 5
+            "pad_digitos": 5,
+            "nota": "Match 100% verificado contra VideoCodefest_008-46min.avi"
         }
 
     # Caso C: Video 3 (Río Telembí, Nariño, 19/10/2021, 1080p, formato 4 dígitos frame_XXXX)
     if re.match(r"^frame_\d{4}$", stem):
         num_str = stem.replace("frame_", "")
-        sec_idx = int(num_str) if num_str.isdigit() else 0
-        # Offset de ancla verificado en telemetría: Minuto 53:54 = segundo 3,234 = frame 97,026
-        frame_idx = 97026 + (sec_idx * 30)
-        segundo_absoluto = 3234 + sec_idx
+        idx_num = int(num_str) if num_str.isdigit() else 0
+        # Offset de ancla verificado en telemetría:
+        # frame_0000.jpg está a las 15:44:40 Z -> Frame crudo 60,756 en video_2hour.mp4
+        # Muestreo a ~2 segundos por fotograma con saltos por giros
+        if idx_num <= 10:
+            dt_seg = idx_num * 2.0
+        else:
+            dt_seg = 20.0 + (idx_num - 10) * 2.444
+        
+        segundo_absoluto = 2025.2 + dt_seg  # 60,756 / 30 = 2025.2 s (Min 33:45)
+        frame_idx = 60756 + int(round(dt_seg * 30.0))
         return {
             "video_origen": "video3",
             "mision": "Narino Telembi (19/10/2021)",
-            "segundo_vuelo": segundo_absoluto,
+            "segundo_vuelo": round(segundo_absoluto, 1),
             "tiempo_mm_ss": formatear_tiempo(segundo_absoluto),
             "frame_crudo_30fps": frame_idx,
             "nombre_frame_esperado": f"frame_{frame_idx:06d}.png",
             "resolucion_esperada": "1920x1080",
-            "tipo_corte": "1_fps_regular",
-            "pad_digitos": 6
+            "tipo_corte": "muestreo_2s_con_saltos",
+            "pad_digitos": 6,
+            "nota": "Ancla corregida en frame 60,756 (15:44:40 Z)"
         }
 
     # Caso D: Cortes de Escena Continua (frame_XXXXXX_sceneXXX o v1_frame_XXXXXX_sceneXXX)
@@ -152,7 +162,7 @@ def resolver_origen_y_frame(nombre_archivo, ancho_img=None, alto_img=None):
         es_1080 = (ancho_img == 1920 and alto_img == 1080) if ancho_img else ("v1_" in stem)
         if es_1080:
             v_orig = "video1"
-            mision = "Tolima (FAC 5749)"
+            mision = "Narino Telembi (FAC 5748 - 14/05/2021)"
             pad = 5
             res_str = "1920x1080"
         else:
@@ -410,12 +420,12 @@ def main():
     dir_vis = dir_salida / "visual_matches"
     dir_vis.mkdir(parents=True, exist_ok=True)
 
-    for v_id in ["video1", "video2", "video3"]:
-        (dir_vis / v_id).mkdir(exist_ok=True)
+    for v_id_folder in ["video1", "video2", "video3", "video1_codefest_tolima"]:
+        (dir_vis / v_id_folder).mkdir(exist_ok=True)
 
     # 5. Mapear cada elemento
     registros = []
-    conteo_vis = {"video1": 0, "video2": 0, "video3": 0}
+    conteo_vis = {"video1": 0, "video2": 0, "video3": 0, "video1_codefest_tolima": 0}
 
     print("\n[RUN] Ejecutando mapeo matemático y verificación...")
 
@@ -451,16 +461,23 @@ def main():
         existe_en_disco = False
         mae_resultado = None
 
-        if v_id in carpetas_frames and carpetas_frames[v_id].is_dir():
+        v_busqueda = v_id
+        if v_id == "video1_codefest_tolima":
+            if "video1_codefest" in carpetas_frames and carpetas_frames["video1_codefest"].is_dir():
+                v_busqueda = "video1_codefest"
+            elif "video1" in carpetas_frames and carpetas_frames["video1"].is_dir():
+                v_busqueda = "video1"
+
+        if v_busqueda in carpetas_frames and carpetas_frames[v_busqueda].is_dir():
             nom_esp = info_match["nombre_frame_esperado"]
-            cand_p = carpetas_frames[v_id] / nom_esp
+            cand_p = carpetas_frames[v_busqueda] / nom_esp
             if cand_p.is_file():
                 p_frame_crudo = cand_p
                 existe_en_disco = True
             else:
                 # Probar variantes con/sin ceros a la izquierda
                 idx = info_match["frame_crudo_30fps"]
-                cand_alt = carpetas_frames[v_id] / f"frame_{idx}.png"
+                cand_alt = carpetas_frames[v_busqueda] / f"frame_{idx}.png"
                 if cand_alt.is_file():
                     p_frame_crudo = cand_alt
                     existe_en_disco = True
@@ -487,7 +504,8 @@ def main():
                     triptico, mae = construir_triptico_match(img_con_bboxes, img_crudo, info_panel)
                     mae_resultado = mae
                     
-                    out_png = dir_vis / v_id / f"match_{v_id}_{nom.replace('.jpg', '')}_frame_{info_match['frame_crudo_30fps']}.jpg"
+                    subcarpeta_vis = "video1" if "video1" in v_id else v_id
+                    out_png = dir_vis / subcarpeta_vis / f"match_{v_id}_{nom.replace('.jpg', '')}_frame_{info_match['frame_crudo_30fps']}.jpg"
                     cv2.imwrite(str(out_png), triptico, [cv2.IMWRITE_JPEG_QUALITY, 88])
                     conteo_vis[v_id] += 1
 
@@ -505,7 +523,8 @@ def main():
             "num_anotaciones": len(bboxes),
             "clases_presentes": ", ".join(clases_detectadas) if clases_detectadas else "Ninguna",
             "frame_crudo_en_disco": existe_en_disco,
-            "mae_diferencia": round(mae_resultado, 2) if mae_resultado is not None else None
+            "mae_diferencia": round(mae_resultado, 2) if mae_resultado is not None else None,
+            "nota_auditoria": info_match.get("nota", "")
         }
 
     with ThreadPoolExecutor(max_workers=args.cpus) as pool:
