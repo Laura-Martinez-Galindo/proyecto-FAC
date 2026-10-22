@@ -161,13 +161,13 @@ def resolver_origen_y_frame(nombre_archivo, ancho_img=None, alto_img=None):
         # Discriminación por resolución conocida
         es_1080 = (ancho_img == 1920 and alto_img == 1080) if ancho_img else ("v1_" in stem)
         if es_1080:
-            v_orig = "video1"
+            v_orig = "video1_escenas"
             mision = "Narino Telembi (FAC 5748 - 14/05/2021)"
             pad = 5
             res_str = "1920x1080"
         else:
-            v_orig = "video2"
-            mision = "Santander (FLIR Systems)"
+            v_orig = "video2_escenas"
+            mision = "Santander (FLIR Systems - Escena)"
             pad = 5
             res_str = "1280x720"
 
@@ -390,25 +390,34 @@ def main():
         print(f"[ERROR] ERROR: No se encontró ningún dataset en {RAIZ / 'datasets'}. Especifica --dataset <ruta>.")
         sys.exit(1)
 
-    # 2. Localizar carpetas de frames originales de los videos
+    # 2. Localizar carpetas de frames originales de los videos con soporte de rutas alternativas
     dir_videos = Path(args.videos_dir).resolve() if args.videos_dir else (RAIZ / "videos")
-    carpetas_frames = {
-        "video1": dir_videos / "video1" / "frames_originales",
-        "video2": dir_videos / "video2" / "frames_originales",
-        "video3": dir_videos / "video3" / "frames_originales",
-    }
+    carpetas_frames = {}
+    for v_k in ["video1", "video2", "video3"]:
+        cands = [
+            dir_videos / v_k / "frames_originales",
+            dir_videos / v_k / "frames_sin_hud",
+            dir_videos / v_k,
+        ]
+        p_elegida = next((c for c in cands if c.is_dir() and any(p.suffix.lower() in [".png", ".jpg", ".jpeg"] for p in c.iterdir())), None)
+        if not p_elegida:
+            p_elegida = dir_videos / v_k / "frames_originales"
+        carpetas_frames[v_k] = p_elegida
 
-    # Verificar disponibilidad en disco
+    # Verificar disponibilidad en disco y mostrar muestras reales
     print("\n[INFO] Verificación de carpetas de videos crudos (30 FPS) en el entorno:")
     hay_frames_locales = False
     for v_id, p_frames in carpetas_frames.items():
         if p_frames.is_dir():
-            n_fr = sum(1 for _ in p_frames.glob("*.png")) + sum(1 for _ in p_frames.glob("*.jpg"))
-            print(f"  [OK] {v_id.upper()}: {n_fr:,} fotogramas disponibles en {p_frames}")
-            if n_fr > 0:
+            ejemplos = [p.name for i, p in enumerate(p_frames.iterdir()) if i < 4 and p.is_file() and p.suffix.lower() in [".png", ".jpg", ".jpeg"]]
+            if ejemplos:
+                print(f"  [OK] {v_id.upper()}: Disponible en {p_frames}")
+                print(f"       -> Muestra de archivos reales: {ejemplos}")
                 hay_frames_locales = True
+            else:
+                print(f"  [AVISO] {v_id.upper()}: Carpeta encontrada pero sin imágenes ({p_frames})")
         else:
-            print(f"  [AVISO] {v_id.upper()}: No encontrada o vacía ({p_frames})")
+            print(f"  [AVISO] {v_id.upper()}: No encontrada ({p_frames})")
 
     # 3. Cargar imágenes del dataset
     items_ds = cargar_dataset(ruta_ds)
@@ -420,12 +429,12 @@ def main():
     dir_vis = dir_salida / "visual_matches"
     dir_vis.mkdir(parents=True, exist_ok=True)
 
-    for v_id_folder in ["video1", "video2", "video3", "video1_codefest_tolima"]:
+    for v_id_folder in ["video1", "video2", "video3", "video1_codefest_tolima", "video2_escenas", "video1_escenas"]:
         (dir_vis / v_id_folder).mkdir(exist_ok=True)
 
     # 5. Mapear cada elemento
     registros = []
-    conteo_vis = {"video1": 0, "video2": 0, "video3": 0, "video1_codefest_tolima": 0}
+    conteo_vis = {"video1": 0, "video2": 0, "video3": 0, "video1_codefest_tolima": 0, "video2_escenas": 0, "video1_escenas": 0}
 
     print("\n[RUN] Ejecutando mapeo matemático y verificación...")
 
@@ -462,25 +471,30 @@ def main():
         mae_resultado = None
 
         v_busqueda = v_id
-        if v_id == "video1_codefest_tolima":
-            if "video1_codefest" in carpetas_frames and carpetas_frames["video1_codefest"].is_dir():
-                v_busqueda = "video1_codefest"
-            elif "video1" in carpetas_frames and carpetas_frames["video1"].is_dir():
-                v_busqueda = "video1"
+        if "video1" in v_id:
+            v_busqueda = "video1"
+        elif "video2" in v_id:
+            v_busqueda = "video2"
+        elif "video3" in v_id:
+            v_busqueda = "video3"
 
         if v_busqueda in carpetas_frames and carpetas_frames[v_busqueda].is_dir():
-            nom_esp = info_match["nombre_frame_esperado"]
-            cand_p = carpetas_frames[v_busqueda] / nom_esp
-            if cand_p.is_file():
-                p_frame_crudo = cand_p
-                existe_en_disco = True
-            else:
-                # Probar variantes con/sin ceros a la izquierda
-                idx = info_match["frame_crudo_30fps"]
-                cand_alt = carpetas_frames[v_busqueda] / f"frame_{idx}.png"
-                if cand_alt.is_file():
-                    p_frame_crudo = cand_alt
+            idx = info_match["frame_crudo_30fps"]
+            candidatos_nombres = [
+                info_match["nombre_frame_esperado"],
+                f"frame_{idx:06d}.png",
+                f"frame_{idx:05d}.png",
+                f"frame_{idx}.png",
+                f"frame_{idx:06d}.jpg",
+                f"frame_{idx:05d}.jpg",
+                f"frame_{idx}.jpg",
+            ]
+            for nom_c in candidatos_nombres:
+                cand_p = carpetas_frames[v_busqueda] / nom_c
+                if cand_p.is_file():
+                    p_frame_crudo = cand_p
                     existe_en_disco = True
+                    break
 
         # Exportación visual si está habilitada
         if args.exportar_visual and existe_en_disco and img_bgr is not None and p_frame_crudo:
