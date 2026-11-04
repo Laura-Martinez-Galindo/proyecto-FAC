@@ -18,7 +18,9 @@
 # Uso (desde la raiz del repo en Hypatia):
 #   sbatch jobs/construir_dataset_sin_hud.sbatch
 # Opciones por variables de entorno:
-#   IGUALAR_RESOLUCION=1   reescala el frame sin HUD a la resolucion del original
+#   MODO=compuesto  (defecto) resolucion original; solo se reemplazan los pixeles del HUD
+#   MODO=reescalar  todo el frame sin HUD reescalado a la resolucion original
+#   MODO=nativo     frames_sin_hud tal cual (960x540)
 #   EXPORTAR_REVISION=0    no genera datasets/revision_3_vistas
 
 set -euo pipefail
@@ -31,8 +33,9 @@ mkdir -p jobs/logs
 PY="${RUTA_PROYECTO}/fac_env311/bin/python"
 [ -x "${PY}" ] || PY=python3
 
-EXTRA=()
-if [ "${IGUALAR_RESOLUCION:-0}" = "1" ]; then EXTRA+=(--igualar-resolucion); fi
+MODO="${MODO:-compuesto}"
+if [ "${IGUALAR_RESOLUCION:-0}" = "1" ]; then MODO=reescalar; fi
+EXTRA=(--modo "${MODO}")
 
 echo "=============================================================================="
 echo " CONSTRUCCION DE dataset_sin_hud"

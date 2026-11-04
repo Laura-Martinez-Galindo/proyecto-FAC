@@ -38,6 +38,14 @@ la imagen de dataset_original contra ``frames_originales/frame_N.png``. Si no
 coincide, se buscan los vecinos N +- ``--vecinos`` y se usa el que coincida, para
 que el frame sin HUD salga del mismo instante exacto. Todo queda registrado.
 
+Resolucion (``--modo``):
+    compuesto (defecto)  frame original a resolucion completa; solo los pixeles marcados en
+                         ``videos/<video>/mascaras_hud`` se reemplazan por ProPainter reescalado.
+                         Fuera del HUD la imagen es identica a dataset_original.
+    reescalar            todo el frame de frames_sin_hud reescalado a la resolucion original.
+    nativo               frames_sin_hud tal cual (ProPainter procesa a 960x540).
+Las etiquetas YOLO estan normalizadas (0-1), asi que sirven en cualquiera de los tres modos.
+
 Uso:
     python scripts/construir_dataset_sin_hud.py \\
         --dataset-original datasets/dataset_original \\
@@ -156,6 +164,7 @@ def procesar(tarea: dict) -> dict:
     salida = Path(tarea["salida"])
     r.update(frame_usado="", psnr_vs_frames_originales="", archivo_frames_originales_usado="",
              archivo_sin_hud_usado="", resolucion_sin_hud="", estado="")
+    r["pixeles_hud_reemplazados_%"] = ""
 
     frame_usado = frame
     if tarea["verificar"]:
@@ -199,7 +208,34 @@ def procesar(tarea: dict) -> dict:
         r["estado"] = "ERROR_LEYENDO_SIN_HUD"
         return r
     r["resolucion_sin_hud"] = f"{img.shape[1]}x{img.shape[0]}"
-    if tarea["igualar_resolucion"]:
+    modo = tarea["modo"]
+    if modo == "compuesto":
+        # Frame original a resolucion completa; solo los pixeles del HUD se reemplazan
+        # por el resultado de ProPainter reescalado. El resto queda identico al original.
+        base = cv2.imread(tarea["img_original"], cv2.IMREAD_COLOR)
+        idx_mask = tarea["idx_mask"]
+        if frame_usado not in idx_mask:
+            r["estado"] = "FALTA_MASCARA_HUD"
+            return r
+        mask = cv2.imread(idx_mask[frame_usado], cv2.IMREAD_GRAYSCALE)
+        h, w = base.shape[:2]
+        if img.shape[:2] != (h, w):
+            img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
+        if mask.shape[:2] != (h, w):
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+        m = (mask > 0).astype(np.uint8)
+        if tarea["dilatar_mascara"] > 0:
+            k = 2 * tarea["dilatar_mascara"] + 1
+            m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        a = m.astype(np.float32)
+        if tarea["suavizar_borde"] > 0:
+            a = np.maximum(a, cv2.GaussianBlur(a, (0, 0), tarea["suavizar_borde"]))
+        a = a[..., None]
+        out = base.astype(np.float32) * (1 - a) + img.astype(np.float32) * a
+        img = np.clip(np.rint(out), 0, 255).astype(np.uint8)
+        r["pixeles_hud_reemplazados_%"] = f"{100.0 * float(m.mean()):.2f}"
+        cv2.imwrite(str(dst), img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+    elif modo == "reescalar":
         h, w = tarea["res_original"]
         if (img.shape[0], img.shape[1]) != (h, w):
             img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
@@ -233,13 +269,22 @@ def main():
     ap.add_argument("--vecinos", type=int, default=3, help="Frames vecinos a revisar si no coincide")
     ap.add_argument("--copiar-no-verificadas", action="store_true",
                     help="Copiar igual las imagenes cuyo PSNR queda bajo el umbral")
-    ap.add_argument("--igualar-resolucion", action="store_true",
-                    help="Reescalar el frame sin HUD a la resolucion del frame original "
-                         "(por defecto se deja en la resolucion nativa de frames_sin_hud)")
+    ap.add_argument("--modo", choices=["compuesto", "reescalar", "nativo"], default="compuesto",
+                    help="compuesto (defecto): frame original a resolucion completa y solo los pixeles "
+                         "del HUD (mascaras_hud) se reemplazan por el resultado de ProPainter. "
+                         "reescalar: todo el frame de frames_sin_hud reescalado a la resolucion original. "
+                         "nativo: frames_sin_hud tal cual (ProPainter trabaja a 960x540).")
+    ap.add_argument("--igualar-resolucion", action="store_true", help="Equivale a --modo reescalar")
+    ap.add_argument("--dilatar-mascara", type=int, default=2,
+                    help="Pixeles extra alrededor de la mascara del HUD en modo compuesto")
+    ap.add_argument("--suavizar-borde", type=float, default=1.5,
+                    help="Sigma del difuminado del borde de la mascara en modo compuesto (0 = corte duro)")
     ap.add_argument("--videos", nargs="*", default=None, help="Limitar a estos videos (ej. video1 video2)")
     args = ap.parse_args()
 
     t0 = time.time()
+    if args.igualar_resolucion:
+        args.modo = "reescalar"
     raiz = Path(args.raiz).resolve()
     ds = (raiz / args.dataset_original) if not Path(args.dataset_original).is_absolute() else Path(args.dataset_original)
     sal = (raiz / args.salida) if not Path(args.salida).is_absolute() else Path(args.salida)
@@ -269,8 +314,13 @@ def main():
             if not args.sin_verificar else (None, {})
         print("  frames_sin_hud:")
         c_sin, idx_sin = elegir_carpeta(candidatos_carpeta(raiz, config, video, "frames_sin_hud"), necesarios)
+        c_mask, idx_mask = (None, {})
+        if args.modo == "compuesto":
+            print("  mascaras_hud:")
+            c_mask, idx_mask = elegir_carpeta(candidatos_carpeta(raiz, config, video, "mascaras_hud"), necesarios)
         carpetas_usadas[video] = {"frames_originales": str(c_orig) if c_orig else None,
-                                  "frames_sin_hud": str(c_sin) if c_sin else None}
+                                  "frames_sin_hud": str(c_sin) if c_sin else None,
+                                  "mascaras_hud": str(c_mask) if c_mask else None}
         if c_sin is None:
             print(f"  !! No se encontro carpeta sin HUD para {video}")
         for r in filas_v:
@@ -280,16 +330,18 @@ def main():
             vent = range(n - args.vecinos, n + args.vecinos + 1)
             idx_orig_red = {k: idx_orig[k] for k in vent if k in idx_orig}
             idx_sin_red = {k: idx_sin[k] for k in vent if k in idx_sin}
+            idx_mask_red = {k: idx_mask[k] for k in vent if k in idx_mask}
             img_o = ds / "images" / r["imagen"]
             h = w = None
-            if args.igualar_resolucion:
+            if args.modo == "reescalar":
                 im = cv2.imread(str(img_o), cv2.IMREAD_UNCHANGED)
                 h, w = im.shape[:2]
             tareas.append(dict(fila=r, idx_orig=idx_orig_red, idx_sin=idx_sin_red, salida=str(sal),
                                img_original=str(img_o), label=str(ds / "labels" / f"{stem}.txt"),
                                verificar=not args.sin_verificar, umbral_psnr=args.umbral_psnr,
                                vecinos=args.vecinos, copiar_no_verificadas=args.copiar_no_verificadas,
-                               igualar_resolucion=args.igualar_resolucion, res_original=(h, w)))
+                               modo=args.modo, res_original=(h, w), idx_mask=idx_mask_red,
+                               dilatar_mascara=args.dilatar_mascara, suavizar_borde=args.suavizar_borde))
 
     print(f"\nProcesando {len(tareas)} imagenes con {args.workers} procesos...")
     resultados = []
@@ -301,7 +353,7 @@ def main():
 
     columnas = list(filas[0].keys()) + ["frame_usado", "psnr_vs_frames_originales",
                                         "archivo_frames_originales_usado", "archivo_sin_hud_usado",
-                                        "resolucion_sin_hud", "estado"]
+                                        "resolucion_sin_hud", "pixeles_hud_reemplazados_%", "estado"]
     with open(sal / "correspondencia.csv", "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=columnas, extrasaction="ignore")
         w.writeheader()
@@ -319,7 +371,7 @@ def main():
     resumen = {"dataset_original": str(ds), "dataset_sin_hud": str(sal), "imagenes_entrada": len(filas),
                "imagenes_generadas": sum(1 for r in resultados if r["estado"].startswith("OK")),
                "estados": conteo, "carpetas_usadas": carpetas_usadas,
-               "igualar_resolucion": args.igualar_resolucion, "verificado": not args.sin_verificar,
+               "modo": args.modo, "verificado": not args.sin_verificar,
                "umbral_psnr": args.umbral_psnr, "segundos": round(time.time() - t0, 1)}
     (sal / "resumen.json").write_text(json.dumps(resumen, indent=2, ensure_ascii=False), encoding="utf-8")
     print("\n" + json.dumps(resumen, indent=2, ensure_ascii=False))

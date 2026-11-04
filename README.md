@@ -165,8 +165,12 @@ Ambos datasets tienen **exactamente las mismas imagenes, nombres y anotaciones**
 
 ```bash
 sbatch jobs/construir_dataset_sin_hud.sbatch
-# Opcional: IGUALAR_RESOLUCION=1 sbatch jobs/construir_dataset_sin_hud.sbatch
+# Por defecto MODO=compuesto: resolucion original, solo se reemplazan los pixeles del HUD.
+# Alternativas: MODO=reescalar o MODO=nativo (frames_sin_hud a 960x540).
+# MODO=reescalar sbatch jobs/construir_dataset_sin_hud.sbatch
 ```
+
+Para el video 3 (clip de 23.315 frames repetido 8 veces): `python scripts/contar_frames_video3.py` cuenta los frames por carpeta y verifica la repeticion; con `--limpiar` borra los frames > 23.315.
 
 El script (`scripts/construir_dataset_sin_hud.py`) verifica cada imagen contra `frames_originales` antes de copiar el frame sin HUD y deja la trazabilidad en `dataset_sin_hud/correspondencia.csv` (y `faltantes.csv` si algo no se pudo generar).
 
