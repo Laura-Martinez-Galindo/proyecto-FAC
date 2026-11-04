@@ -34,14 +34,14 @@ CLIP = 23315
 PATRON = re.compile(r"(\d+)(?=\.[A-Za-z0-9]+$)")
 
 
-def indexar(carpeta: Path) -> dict[int, Path]:
+def indexar(carpeta: Path) -> dict[int, str]:
     idx = {}
     with os.scandir(carpeta) as it:
         for e in it:
             if e.is_file():
                 m = PATRON.search(e.name)
                 if m:
-                    idx[int(m.group(1))] = Path(e.path)
+                    idx[int(m.group(1))] = e.path
     return idx
 
 
@@ -97,12 +97,12 @@ def main():
             paso = max(1, a.clip // a.muestras)
             iguales = total = 0
             for k in range(1, a.clip + 1, paso):
-                a0 = cv2.imread(str(idx[k])) if k in idx else None
+                a0 = cv2.imread(idx[k]) if k in idx else None
                 for v in range(1, 8):
                     j = k + v * a.clip
                     if a0 is None or j not in idx:
                         continue
-                    b = cv2.imread(str(idx[j]))
+                    b = cv2.imread(idx[j])
                     total += 1
                     iguales += int(b is not None and b.shape == a0.shape and int(np.abs(a0.astype(int) - b.astype(int)).max()) == 0)
             print(f"\nRepeticion en frames_originales: {iguales}/{total} pares (vuelta 1 vs vueltas 2-8) identicos pixel a pixel")
@@ -125,9 +125,9 @@ def main():
                 (destino / nombre).mkdir(parents=True, exist_ok=True)
             for p in sobrantes:
                 if destino:
-                    shutil.move(str(p), str(destino / nombre / p.name))
+                    shutil.move(p, str(destino / nombre / os.path.basename(p)))
                 else:
-                    p.unlink()
+                    os.remove(p)
             print(f"{nombre}: {'movidos' if destino else 'borrados'} {len(sobrantes)} frames > {a.clip}")
 
 

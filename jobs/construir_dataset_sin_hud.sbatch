@@ -3,9 +3,9 @@
 #SBATCH --partition=short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=32G
-#SBATCH --time=02:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
+#SBATCH --time=00:45:00
 #SBATCH --output=jobs/logs/dataset_sin_hud_%j.out
 #SBATCH --error=jobs/logs/dataset_sin_hud_%j.err
 #SBATCH --mail-type=END,FAIL
