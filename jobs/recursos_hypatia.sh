@@ -6,7 +6,7 @@
 
 echo "=================== PARTICIONES ==================="
 echo "CPUS = asignadas/libres/otras/total   (las 'libres' son las que importan)"
-sinfo -o "%-12P %.5a %.12l %.6D %.20C %.8m %20G" 2>/dev/null
+sinfo -o "%12P %.5a %.12l %.6D %.20C %.8m %20G" 2>/dev/null
 
 echo
 echo "=================== NODOS CON CPUS LIBRES ==================="
