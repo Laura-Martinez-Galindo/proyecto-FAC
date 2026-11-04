@@ -149,3 +149,32 @@ squeue -u $USER -o "%.18i %.12P %.24j %.12u %.2t %.10M %.4D %R"
 ```bash
 tail -n 100 -F jobs/logs/grid_search_*.out
 ```
+
+---
+
+## Datasets de deteccion: `dataset_original` y `dataset_sin_hud`
+
+Ambos datasets tienen **exactamente las mismas imagenes, nombres y anotaciones**; solo cambia si el frame tiene HUD o no.
+
+* **`datasets/dataset_original`** (1.116 imagenes, 6.088 cajas, 5 clases): cada imagen es el frame exacto de uno de los 3 videos, encontrado por matching contra los frames originales.
+  * `images/<video>_<frame>_<segundo>.png`: `frame` cuenta a los fps originales desde 1 (igual que `videos/<video>/frames_originales/frame_N.png`); `segundo = (frame - 1) / fps`.
+  * `labels/*.txt`: YOLO (`clase cx cy w h`). Clases: 0 vehicle, 1 building, 2 road, 3 river, 4 SDZI (*Soil Disturbance Zones of Interest*).
+  * `correspondencia.csv` / `.xlsx`: para cada imagen, video, frame, segundo, dataset de procedencia (`dataset_split_completo`, `Adendo` o `yolo_dataset`), nombre original y como se verifico.
+  * `_referencia_origen/images/`: copia de la imagen tal como venia en su dataset de procedencia (solo para revision).
+* **`datasets/dataset_sin_hud`**: se genera en Hypatia tomando el mismo frame de `videos/<video>/frames_sin_hud`:
+
+```bash
+sbatch jobs/construir_dataset_sin_hud.sbatch
+# Opcional: IGUALAR_RESOLUCION=1 sbatch jobs/construir_dataset_sin_hud.sbatch
+```
+
+El script (`scripts/construir_dataset_sin_hud.py`) verifica cada imagen contra `frames_originales` antes de copiar el frame sin HUD y deja la trazabilidad en `dataset_sin_hud/correspondencia.csv` (y `faltantes.csv` si algo no se pudo generar).
+
+### Revision visual (3 vistas: origen | dataset_original | dataset_sin_hud)
+
+```bash
+# Ventana (PC local o ssh -X): flechas para avanzar/retroceder, b oculta cajas, g salta a una imagen
+python scripts/revisar_dataset_3_vistas.py --original datasets/dataset_original --sin-hud datasets/dataset_sin_hud
+# Sin pantalla: exporta un JPG por imagen
+python scripts/revisar_dataset_3_vistas.py --original datasets/dataset_original --sin-hud datasets/dataset_sin_hud --exportar datasets/revision_3_vistas
+```
