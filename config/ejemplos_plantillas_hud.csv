@@ -1,12 +1,14 @@
 ruta,sensor,filtros,foco,exposicion
-datasets/dataset_original/images/video3_003782_0126.033.png,HDEO,DDE,FOC MAN,EXP MAN
-datasets/dataset_original/images/video3_014870_0495.633.png,HDEO,DDE,FOC MAN,EXP MAN
-datasets/dataset_original/images/video2_061737_2059.925.png,HDEO,DDE HAZE,FOC MAN,EXP MAN
-datasets/dataset_original/images/video2_062157_2073.939.png,HDEO,DDE HAZE,FOC MAN,EXP MAN
-datasets/dataset_original/images/video2_007973_0265.999.png,HDLL,DDE,FOC AUT,EXP AUT
-datasets/dataset_original/images/video2_008002_0266.967.png,HDLL,DDE,FOC AUT,EXP AUT
-datasets/dataset_original/images/video2_026704_0890.990.png,HDIR,C WH DDE,FOC MAN,EXP AUT
-datasets/dataset_original/images/video2_072437_2416.948.png,HDIR,C WH DDE,FOC MAN,EXP AUT
-datasets/dataset_original/images/video1_006391_0213.000.png,HDIR,C WH,FOC MAN,EXP AUT
-datasets/dataset_original/images/video1_019711_0657.000.png,HDEO,HAZE,FOC MAN,EXP AUT
-datasets/dataset_original/images/video3_013790_0459.633.png,SWIR,DDE,FOC MAN,EXP AUT
+config/ejemplos_hud/video3_003782_0126.033.png,HDEO,DDE,FOC MAN,EXP MAN
+config/ejemplos_hud/video3_014870_0495.633.png,HDEO,DDE,FOC MAN,EXP MAN
+config/ejemplos_hud/video2_061737_2059.925.png,HDEO,DDE HAZE,FOC MAN,EXP MAN
+config/ejemplos_hud/video2_062157_2073.939.png,HDEO,DDE HAZE,FOC MAN,EXP MAN
+config/ejemplos_hud/video2_007973_0265.999.png,HDLL,DDE,FOC AUT,EXP AUT
+config/ejemplos_hud/video2_008002_0266.967.png,HDLL,DDE,FOC AUT,EXP AUT
+config/ejemplos_hud/video2_026704_0890.990.png,HDIR,C WH DDE,FOC MAN,EXP AUT
+config/ejemplos_hud/video2_072437_2416.948.png,HDIR,C WH DDE,FOC MAN,EXP AUT
+config/ejemplos_hud/video1_006391_0213.000.png,HDIR,C WH,FOC MAN,EXP AUT
+config/ejemplos_hud/video1_019711_0657.000.png,HDEO,HAZE,FOC MAN,EXP AUT
+config/ejemplos_hud/video3_013790_0459.633.png,SWIR,DDE,FOC MAN,EXP AUT
+config/ejemplos_hud/video3_002566.png,HDIR,M WH DDE,FOC MAN,EXP HST
+config/ejemplos_hud/video3_005866.png,HDIR,M WH DDE,FOC MAN,EXP HST

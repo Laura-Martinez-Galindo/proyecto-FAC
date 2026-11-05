@@ -244,6 +244,7 @@ def main():
     ap.add_argument("--entrada", required=True, help="Carpeta con las imagenes ruidosas (referencia)")
     ap.add_argument("--experimento", action="append", default=[], metavar="NOMBRE=CARPETA")
     ap.add_argument("--regimenes", help="CSV con columnas imagen, regimen (p.ej. regimenes_dataset.csv)")
+    ap.add_argument("--lista", help="CSV con columna imagen: evaluar solo esas (p.ej. <FAMILIA>_evaluacion.csv)")
     ap.add_argument("--mascaras", help="Carpeta de mascaras HUD (mismo nombre) para excluir esos pixeles")
     ap.add_argument("--salida", required=True)
     ap.add_argument("--iqa", nargs="*", default=[], help="Metricas pyiqa extra: niqe brisque piqe ...")
@@ -264,6 +265,14 @@ def main():
         with open(a.regimenes, encoding="utf-8-sig", newline="") as f:
             for r in csv.DictReader(f):
                 regimen[Path(r["imagen"]).stem] = r.get("regimen", "SIN_REGIMEN")
+    if a.lista:
+        with open(a.lista, encoding="utf-8-sig", newline="") as f:
+            filas_l = list(csv.DictReader(f))
+        quiero = {Path(r["imagen"]).stem for r in filas_l}
+        for r in filas_l:
+            if r.get("regimen"):
+                regimen.setdefault(Path(r["imagen"]).stem, r["regimen"])
+        nombres = [n for n in nombres if Path(n).stem in quiero]
     if a.max_imagenes:
         rng = np.random.default_rng(a.semilla)
         por_reg = {}

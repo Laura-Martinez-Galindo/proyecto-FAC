@@ -53,3 +53,5 @@ jobs/*-err.o*
 *.temp
 *.exe
 *.zip
+# Plantillas del HUD (solo el recorte del HUD, ~1 MB)
+!config/ejemplos_hud/*.png

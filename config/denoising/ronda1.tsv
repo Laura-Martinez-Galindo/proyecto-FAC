@@ -1,0 +1,20 @@
+# RONDA 1 de denoising: un experimento por fila. Lo lee jobs/lanzar_ronda1.sh.
+# Mismo presupuesto para todos los entrenables: 4000 pasos (instantanea en 2000), parche/batch/lr
+# del articulo de cada metodo (ver `python scripts/denoising.py metodos`).
+# recurso: gpu = entrena + infiere (jobs/denoising_entrenar.sbatch)
+#          cpu = metodo clasico, solo infiere (jobs/denoising_clasico.sbatch)
+# experimento	familia	metodo	recurso	argumentos
+udvd_r1	OPTICO_DDE	udvd	gpu	--batch 8 --amp
+apbsn_r1	OPTICO_DDE	apbsn	gpu
+b2u_r1	OPTICO_DDE	b2u	gpu	--amp
+nlm_h4	OPTICO_DDE	nlm	cpu	--nlm-h 4 --nlm-h-color 4
+nlm_h8	OPTICO_DDE	nlm	cpu	--nlm-h 8 --nlm-h-color 8
+udvd_r1	OPTICO	udvd	gpu	--batch 8 --amp
+b2u_r1	OPTICO	b2u	gpu	--amp
+nb2nb_r1	OPTICO	nb2nb	gpu	--amp
+nlm_h4	OPTICO	nlm	cpu	--nlm-h 4 --nlm-h-color 4
+nlm_h8	OPTICO	nlm	cpu	--nlm-h 8 --nlm-h-color 8
+udvd_r1	TERMICO	udvd	gpu	--canales 1 --batch 8 --amp
+structn2v_r1	TERMICO	structn2v	gpu	--canales 1 --amp --struct-largo 9 --struct-eje vertical
+nlm_h6	TERMICO	nlm	cpu	--canales 1 --nlm-h 6
+destripe_nlm_h6	TERMICO	destripe_nlm	cpu	--canales 1 --nlm-h 6 --destripe-sigma 3
