@@ -15,6 +15,9 @@
 # y asi las 2 GPUs trabajan todo el tiempo. Si un experimento falla, se anota y se sigue con el resto.
 # Lo arma y lo manda jobs/lanzar_ronda1.sh (la particion, --gres, CPUs y RAM van por linea de comando).
 # Variables: CARRIL (archivo), PASOS (4000)
+#   EVALUAR_AL_FINAL=1: al terminar, si ya no queda otro carril de esta ronda corriendo (dn_gpu*),
+#   este mismo job corre la evaluacion de todas las familias (jobs/denoising_evaluar.sbatch). Asi la
+#   evaluacion tambien queda en la GPU y no hace falta otro job.
 
 set -uo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
@@ -58,3 +61,14 @@ done < "${CARRIL}"
 echo
 echo "=================== RESUMEN DEL CARRIL ==================="
 printf '%s\n' "${resumen[@]}"
+
+if [ "${EVALUAR_AL_FINAL:-0}" = "1" ]; then
+  otros=$(squeue -u "$USER" -h -o "%i %j" 2>/dev/null | awk -v yo="${SLURM_JOB_ID:-x}" '$2 ~ /^dn_gpu/ && $1 != yo' | wc -l)
+  if [ "$otros" -eq 0 ]; then
+    echo
+    echo "=================== EVALUACION (ultimo carril en terminar) ==================="
+    bash jobs/denoising_evaluar.sbatch
+  else
+    echo "Queda otro carril corriendo: la evaluacion la hace el ultimo en terminar."
+  fi
+fi
