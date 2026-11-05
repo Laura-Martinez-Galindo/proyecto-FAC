@@ -18,10 +18,7 @@
 # Variables: DESTINO (gdrive:proyecto-FAC/datasets)  DATASETS ("dataset_original dataset_sin_hud")
 # Para abrirlo despues: descargar el .tar y  tar -xf dataset_original.tar  (en Windows: 7-Zip)
 #
-# Si el job termina con codigo 3 (el nodo de computo no tiene internet), correr lo mismo en el
-# nodo de login dentro de tmux, que sigue aunque se cierre MobaXterm:
-#   tmux new -s drive                 (para volver despues:  tmux attach -t drive)
-#   bash jobs/subir_drive.sbatch      (corre igual, sin Slurm)
+# Si el job termina con codigo 3, el nodo de computo no tiene internet: probar otra particion.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
@@ -32,7 +29,7 @@ TMP="${TMPDIR_SUBIDA:-datasets/_para_drive}"
 echo "== Prueba de conexion a Drive desde $(hostname)"
 if ! timeout 60 rclone lsd "${DESTINO%%:*}:" --max-depth 1 >/dev/null 2>&1; then
   echo "!! Este nodo no llega a Google Drive (los nodos de computo pueden no tener internet)."
-  echo "   Correrlo en el nodo de login dentro de tmux (ver el encabezado de jobs/subir_drive.sbatch)."
+  echo "   Probar otra particion (PARTICIONES=... bash jobs/enviar.sh ...)."
   exit 3
 fi
 
