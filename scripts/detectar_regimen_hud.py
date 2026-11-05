@@ -234,6 +234,43 @@ def intervalos(filas):
     return out
 
 
+def mosaico_tramos(filas, inter, ruta: Path, por_regimen=24):
+    """Un recorte del HUD por tramo (el frame leido del medio del tramo), agrupado por regimen y
+    ordenado del tramo con menor parecido a la plantilla al mayor. Sirve para revisar a ojo que
+    TODOS los tramos sean lo que dice la etiqueta (un modo nuevo parecido a uno conocido se veria
+    aqui con texto distinto)."""
+    por_frame = {f["frame"]: f for f in filas}
+    grupos = {}
+    for reg, i0, i1 in inter:
+        cands = [f for f in filas if i0 <= f["frame"] <= i1 and f["origen"] == "leido"]
+        if not cands:
+            continue
+        f = cands[len(cands) // 2]
+        pmin = min(float(f["p_sensor"]), float(f["p_filtros"]))
+        grupos.setdefault(reg, []).append((pmin, i0, i1, f))
+    filas_img = []
+    for reg in sorted(grupos):
+        lst = sorted(grupos[reg])[:por_regimen]
+        tit = np.zeros((26, 6 * 300, 3), np.uint8)
+        cv2.putText(tit, f"{reg}: {len(grupos[reg])} tramos (se muestran {len(lst)}, peor parecido primero)",
+                    (6, 19), 0, 0.6, (255, 255, 255), 1)
+        filas_img.append(tit)
+        tiles = []
+        for pmin, i0, i1, f in lst:
+            img = cv2.imread(f["ruta"])
+            h, w = img.shape[:2]
+            roi = cv2.resize(img[int(h * 0.62):int(h * 0.95), 0:int(w * 0.13)], (300, 150))
+            bar = np.zeros((36, 300, 3), np.uint8)
+            cv2.putText(bar, f"frames {i0}-{i1}", (3, 13), 0, 0.42, (255, 255, 255), 1)
+            cv2.putText(bar, f"{f['filtros']}|{f['exposicion']} p={pmin:.2f}"[:48], (3, 30), 0, 0.4, (0, 255, 255), 1)
+            tiles.append(np.vstack([bar, roi]))
+        while len(tiles) % 6:
+            tiles.append(np.zeros((186, 300, 3), np.uint8))
+        filas_img += [np.hstack(tiles[i:i + 6]) for i in range(0, len(tiles), 6)]
+    if filas_img:
+        cv2.imwrite(str(ruta), np.vstack(filas_img), [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+
 def cmd_carpeta(a):
     carpeta = Path(a.carpeta)
     idx = {}
@@ -289,9 +326,14 @@ def cmd_carpeta(a):
                "regimenes_%": {k: round(100 * v / len(filas), 2) for k, v in cnt.most_common()},
                "combinaciones_completas": {" | ".join(k): v for k, v in combos.most_common()},
                "ilegibles_antes_de_relleno": len(dudosos),
+               "parecido_minimo_por_regimen_p05": {
+                   reg: round(float(np.percentile([min(float(f["p_sensor"]), float(f["p_filtros"])) for f in filas
+                                                   if f["regimen"] == reg and f["origen"] == "leido"] or [0], 5)), 3)
+                   for reg in cnt},
                "sin_resolver": cnt.get("DESCONOCIDO", 0)}
     sal.with_name(sal.stem + "_resumen.json").write_text(json.dumps(resumen, indent=2, ensure_ascii=False))
     guardar_dudosos(dudosos, sal.with_name(sal.stem + "_dudosos"))
+    mosaico_tramos(filas, inter, sal.with_name(sal.stem + "_tramos.jpg"))
     print(json.dumps(resumen, indent=2, ensure_ascii=False))
 
 
