@@ -63,7 +63,7 @@ def mosaicos(fn, x, tile, overlap, multiplo):
     # si la imagen es mas chica que el mosaico, se rellena por reflexion
     ph, pw = max(0, tile - H), max(0, tile - W)
     if ph or pw:
-        x = torch.nn.functional.pad(x, (0, pw, 0, ph), mode="reflect")
+        x = torch.nn.functional.pad(x, (0, pw, 0, ph), mode="replicate")
     _, _, Hp, Wp = x.shape
     paso = max(1, tile - overlap)
     ys = list(range(0, Hp - tile + 1, paso))
