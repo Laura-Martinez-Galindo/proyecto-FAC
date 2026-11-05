@@ -28,7 +28,13 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import torch
+
+try:  # torch solo hace falta para entrenar (Parches); medir/inferir clasicos funciona sin torch
+    import torch
+    _Base = torch.utils.data.Dataset
+except ImportError:  # pragma: no cover
+    torch = None
+    _Base = object
 
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ / "scripts"))
@@ -155,7 +161,7 @@ def leer_lista(ruta: str, video: str | None = None) -> list[dict]:
 # Parches para entrenar
 # ---------------------------------------------------------------------------
 
-class Parches(torch.utils.data.Dataset):
+class Parches(_Base):
     """
     Cada item = una carga de frames (1 o 5) de la que se sacan `por_carga` parches.
     Devuelve float32 [por_carga, T*C, t, t] en [0,1]. Los parches no tocan el HUD.
