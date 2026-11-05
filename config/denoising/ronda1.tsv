@@ -1,25 +1,22 @@
-# RONDA 1 de denoising: un experimento por fila. Lo lee jobs/lanzar_ronda1.sh.
-# Familias POR REGIMEN (config/denoising/familias.json), elegidas con la caracterizacion del ruido
-# (resultados/ruido_regimenes) y la investigacion de ruido por regimen:
-#   OPTICO_CORRELADO  HDEO_HAZE, HDEO_DDE, SWIR_DDE   ruido en grumos (correlacion 0,4-0,55 a 1 px)
-#   HAZE_DDE          HDEO_DDE_HAZE                   grano fino + sal y pimienta (3,6 %)
-#   BAJA_LUZ          HDLL_DDE                        ruido en una direccion (vertical)
-#   TERMICO           HDIR_*                          rayas horizontales + sal y pimienta (v2), 1 canal
+# RONDA 1 de denoising: SOLO los 3 regimenes dominantes (uno por video), que cubren 1.082 de las
+# 1.116 imagenes (97 %). Las 34 restantes (termico, baja luz, SWIR) quedan fuera de esta ronda.
+# Modelos elegidos con la caracterizacion del ruido (resultados/ruido_regimenes) y la investigacion:
+#   HDEO_HAZE      video1  sigma 0,36  ruido en grumos (corr. 0,50 / 0,43 a 1 px; 0,25 a 2 px), sin impulsos
+#   HDEO_DDE_HAZE  video2  sigma 4,9   grano fino (corr. 0,33 a 1 px, ~0 a 2 px) + 3,6 % sal y pimienta
+#   HDEO_DDE       video3  sigma 0,24  ruido en grumos (0,43 / 0,43; 0,21 a 2 px) + bloques de compresion
 # Mismo presupuesto para todos los entrenables: 4000 pasos (copia en 2000), parche/batch/lr del
-# articulo de cada metodo. recurso: gpu = entrena + infiere; cpu = metodo clasico (solo infiere).
+# articulo de cada metodo. recurso: gpu = entrena + infiere; cpu = metodo clasico (corre igual en el carril de GPU).
 # experimento	familia	metodo	recurso	argumentos
-udvd_r1	OPTICO_CORRELADO	udvd	gpu	--batch 8 --amp
-apbsn_r1	OPTICO_CORRELADO	apbsn	gpu	
-nlm_h5	OPTICO_CORRELADO	nlm	cpu	--nlm-h 5 --nlm-h-color 5
-udvd_r1	HAZE_DDE	udvd	gpu	--batch 8 --amp
-apbsn_r1	HAZE_DDE	apbsn	gpu	
-nb2nb_l1_r1	HAZE_DDE	nb2nb	gpu	--amp --perdida l1
-b2u_l1_r1	HAZE_DDE	b2u	gpu	--amp --perdida l1
-mediana_nlm_h8	HAZE_DDE	mediana_nlm	cpu	--nlm-h 8 --nlm-h-color 8 --mediana-umbral 30
-udvd_r1	BAJA_LUZ	udvd	gpu	--batch 8 --amp
-structn2v_v_r1	BAJA_LUZ	structn2v	gpu	--amp --struct-largo 9 --struct-eje vertical
-nb2nb_r1	BAJA_LUZ	nb2nb	gpu	--amp
-nlm_h6	BAJA_LUZ	nlm	cpu	--nlm-h 6 --nlm-h-color 6
-udvd_r1	TERMICO	udvd	gpu	--canales 1 --batch 8 --amp
-structn2v_h_r1	TERMICO	structn2v	gpu	--canales 1 --amp --struct-largo 9 --struct-eje horizontal
-destripe_h_nlm_h6	TERMICO	destripe_nlm	cpu	--canales 1 --nlm-h 6 --destripe-sigma 3 --destripe-eje horizontal
+udvd_r1	HDEO_HAZE	udvd	gpu	--batch 8 --amp
+apbsn_r1	HDEO_HAZE	apbsn	gpu	
+mmbsn_r1	HDEO_HAZE	mmbsn	gpu	
+nlm_h4	HDEO_HAZE	nlm	cpu	--nlm-h 4 --nlm-h-color 4
+udvd_r1	HDEO_DDE_HAZE	udvd	gpu	--batch 8 --amp
+apbsn_r1	HDEO_DDE_HAZE	apbsn	gpu	
+nb2nb_l1_r1	HDEO_DDE_HAZE	nb2nb	gpu	--amp --perdida l1
+b2u_l1_r1	HDEO_DDE_HAZE	b2u	gpu	--amp --perdida l1
+mediana_nlm_h8	HDEO_DDE_HAZE	mediana_nlm	cpu	--nlm-h 8 --nlm-h-color 8 --mediana-umbral 30
+udvd_r1	HDEO_DDE	udvd	gpu	--batch 8 --amp
+apbsn_r1	HDEO_DDE	apbsn	gpu	
+mmbsn_r1	HDEO_DDE	mmbsn	gpu	
+nlm_h3	HDEO_DDE	nlm	cpu	--nlm-h 3 --nlm-h-color 3

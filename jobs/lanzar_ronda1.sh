@@ -18,6 +18,7 @@
 # Uso (desde la raiz del repo):
 #   PRUEBA=1 bash jobs/lanzar_ronda1.sh            # solo el test
 #   bash jobs/lanzar_ronda1.sh                     # test y envio
+#   (con TODO_EN_GPU=1 las listas tambien se arman dentro del primer carril que arranca)
 #   PREPARAR=0 DEPENDE_DE=791848 bash jobs/lanzar_ronda1.sh   # las listas ya se estan haciendo en
 #                                                  # ese job: no repetir y esperar a que termine
 #   SOLO=TERMICO ...  PASOS=1000 ...  CARRILES=2 ...  GPU_CPUS=16 GPU_MEM=64G ...
@@ -47,7 +48,7 @@ elegir_particion() {
 }
 minutos_de() {  # estimacion (min) de entrenar 4000 pasos + inferir, para repartir carriles
   case "$1" in
-    udvd) echo 75 ;; b2u|apbsn) echo 60 ;; nb2nb|structn2v|n2v) echo 30 ;; *) echo 15 ;;
+    udvd) echo 75 ;; mmbsn) echo 70 ;; b2u|apbsn) echo 60 ;; nb2nb|structn2v|n2v) echo 30 ;; *) echo 15 ;;
   esac
 }
 
@@ -120,7 +121,9 @@ echo
 echo "=================== TEST (sbatch --test-only, no se encola nada) ==================="
 FALLAS=0
 fila() { printf "%-26s %-8s %s\n" "$1" "$2" "$3"; }
-if [ "${PREPARAR:-1}" = "1" ]; then
+if [ "${PREPARAR:-1}" = "1" ] && [ "${TODO_EN_GPU:-1}" = "1" ]; then
+  fila "preparar (listas)" "gpu" "al inicio de los carriles (el primero que llega las arma)"
+elif [ "${PREPARAR:-1}" = "1" ]; then
   read -r P_PREP T <<<"$(elegir_particion jobs/denoising_preparar.sbatch)"
   fila "preparar" "${P_PREP:-NINGUNA}" "${T:-NO ENTRA}"; [ -n "${P_PREP:-}" ] || FALLAS=1
 fi
@@ -166,7 +169,11 @@ echo
 echo "=================== ENVIO ==================="
 DEP=""
 [ -n "${DEPENDE_DE:-}" ] && DEP="--dependency=afterok:${DEPENDE_DE}"
-if [ "${PREPARAR:-1}" = "1" ]; then
+PREP_CARRIL=0
+if [ "${PREPARAR:-1}" = "1" ] && [ "${TODO_EN_GPU:-1}" = "1" ]; then
+  PREP_CARRIL=1
+  rm -f "jobs/carriles/.listas_${RONDA}_ok"
+elif [ "${PREPARAR:-1}" = "1" ]; then
   read -r ID P_PREP <<<"$(enviar_cpu "$P_PREP" ${DEP} --export=ALL,REGIMENES="${REGIMENES:-0}" jobs/denoising_preparar.sbatch)"
   [ -n "${ID:-}" ] || { echo "!! no se pudo enviar preparar"; exit 1; }
   echo "preparar                   -> job $ID ($P_PREP)"
@@ -177,7 +184,7 @@ for ((i=1; i<=CARRILES; i++)); do
   f="jobs/carriles/${RONDA}_carril${i}.tsv"
   [ -s "$f" ] || continue
   ID=$(sbatch --parsable ${DEP} "${GPU_RES[@]}" -J "dn_gpu${i}" \
-       --export=ALL,CARRIL="$f",PASOS="${PASOS:-4000}",EVALUAR_AL_FINAL="${TODO_EN_GPU:-1}",RONDA="${RONDA}" \
+       --export=ALL,CARRIL="$f",PASOS="${PASOS:-4000}",EVALUAR_AL_FINAL="${TODO_EN_GPU:-1}",RONDA="${RONDA}",PREPARAR_LISTAS="${PREP_CARRIL}" \
        -o "jobs/logs/dn_gpu${i}_%j.out" -e "jobs/logs/dn_gpu${i}_%j.err" jobs/denoising_carril.sbatch) \
        || { echo "!! no se pudo enviar el carril GPU $i"; exit 1; }
   echo "carril GPU $i               -> job $ID (gpu)"

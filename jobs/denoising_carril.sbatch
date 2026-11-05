@@ -29,6 +29,25 @@ L=resultados/denoising/listas
 nvidia-smi --query-gpu=name,memory.total --format=csv 2>/dev/null || true
 echo "Carril ${CARRIL} | CPUs ${SLURM_CPUS_PER_TASK:-?} | nodo $(hostname)"
 
+# Listas de la ronda (si PREPARAR_LISTAS=1): el primer carril que llega las arma; el otro espera
+# el candado y, al ver la marca, no las repite.
+if [ "${PREPARAR_LISTAS:-0}" = "1" ]; then
+  MARCA="jobs/carriles/.listas_${RONDA:-ronda1}_ok"
+  exec 9>"jobs/carriles/.listas_${RONDA:-ronda1}.lock"
+  flock 9
+  if [ ! -f "$MARCA" ]; then
+    echo "== Armando listas por familia (config/denoising/familias.json)"
+    MASC=""
+    [ -d datasets/dataset_sin_hud/mascaras_hud ] || MASC="--exportar-mascaras datasets/dataset_sin_hud/mascaras_hud"
+    python scripts/listas_denoising.py --max-por-familia "${MAX_POR_FAMILIA:-1500}" \
+        --max-evaluacion "${MAX_EVALUACION:-120}" ${MASC} && touch "$MARCA"
+  else
+    echo "== Listas ya armadas por el otro carril"
+  fi
+  flock -u 9
+  [ -f "$MARCA" ] || { echo "!! no se pudieron armar las listas"; exit 1; }
+fi
+
 resumen=()
 while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
   [[ -z "${EXP}" || "${EXP}" == \#* ]] && continue

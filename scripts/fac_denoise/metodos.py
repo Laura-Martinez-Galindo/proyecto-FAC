@@ -311,6 +311,27 @@ class APBSNm(Metodo):
 
 
 # ---------------------------------------------------------------------------
+class MMBSNm(APBSNm):
+    """MM-BSN (CVPRW 2023): como AP-BSN pero con varias mascaras de punto ciego (p.ej. 'o' + diagonal
+    'a45') para ruido correlacionado en varias direcciones. Configuracion oficial de SIDD:
+    mask_type o_a45, DCL1=2, DCL2=7, base 128, PD 5/2, R3 (8, 0.16), L1, parche 120, batch 8, lr 1e-4.
+    Usa los mismos --pd-a/--pd-b/--pd-pad/--r3-t/--r3-p/--bsn-canales que apbsn."""
+    nombre = "mmbsn"
+
+    @staticmethod
+    def argumentos(p):
+        p.add_argument("--mm-mascaras", default="o_a45", help="mascaras de MM-BSN: o, c, r, sz, fsz, a45, a135, cha, fcha (unir con _)")
+        p.add_argument("--mm-dcl1", type=int, default=2)
+        p.add_argument("--mm-dcl2", type=int, default=7)
+
+    def crear(self, a, c):
+        from fac_denoise.mmbsn import BSN_MM
+        return BSN_MM(pd_a=a.pd_a, pd_b=a.pd_b, pd_pad=a.pd_pad, R3=a.r3_t > 0, R3_T=max(a.r3_t, 1), R3_p=a.r3_p,
+                      in_ch=c, bsn_base_ch=a.bsn_canales, DCL1_num=a.mm_dcl1, DCL2_num=a.mm_dcl2,
+                      mask_type=a.mm_mascaras)
+
+
+# ---------------------------------------------------------------------------
 class NLM(Metodo):
     nombre, entrenable = "nlm", False
 
@@ -370,7 +391,7 @@ class MedianaNLM(NLM):
         return super().clasico(im2, a)
 
 
-METODOS = {m.nombre: m for m in [UDVD(), N2V(), StructN2V(), NB2NB(), B2U(), APBSNm(), NLM(), DestripeNLM(),
+METODOS = {m.nombre: m for m in [UDVD(), N2V(), StructN2V(), NB2NB(), B2U(), APBSNm(), MMBSNm(), NLM(), DestripeNLM(),
                                  MedianaNLM()]}
 
 
