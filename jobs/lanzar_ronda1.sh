@@ -19,6 +19,7 @@
 #   PREPARAR=0 bash jobs/lanzar_ronda1.sh      # ya existen las listas: no repetir (1)
 #   REGIMENES=1 bash jobs/lanzar_ronda1.sh     # volver a leer regimenes antes de las listas
 #   PASOS=1000 bash jobs/lanzar_ronda1.sh      # presupuesto distinto
+#   GPU_CPUS=16 GPU_MEM=64G bash jobs/lanzar_ronda1.sh   # fijar CPUs/RAM de cada job de GPU
 set -uo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p jobs/logs
@@ -41,6 +42,29 @@ elegir_particion() {  # elegir_particion <args sin -p> -> "particion fecha"
   [ -n "$mejor" ] && echo "$mejor $mejor_t"
 }
 
+# ------------------------------------------------------------------ RECURSOS DE GPU
+# Cada experimento de GPU usa 1 GPU; con el limite de 2 GPUs por usuario corren 2 a la vez (las 2
+# GPUs ocupadas todo el tiempo). Para que cada uno vaya lo mas rapido posible se le da la mayor
+# cantidad de CPUs (lectura de frames en paralelo) y RAM que NO retrase su arranque: se prueba con
+# --test-only de mayor a menor y se queda con el primero que arranca a mas tardar MARGEN_MIN minutos
+# despues de lo que arrancaria con lo minimo (8 CPUs, 32G). Se puede fijar a mano: GPU_CPUS=16 GPU_MEM=64G
+a_epoch() { date -d "$1" +%s 2>/dev/null || echo 0; }
+if [ -z "${GPU_CPUS:-}" ] || [ -z "${GPU_MEM:-}" ]; then
+  T0=$(inicio -c 8 --mem=32G jobs/denoising_entrenar.sbatch)
+  GPU_CPUS=8; GPU_MEM=32G
+  if [ -n "$T0" ]; then
+    E0=$(a_epoch "$T0")
+    for cand in ${CANDIDATOS_GPU:-48:192G 32:128G 24:96G 16:64G 12:48G}; do
+      c=${cand%%:*}; m=${cand##*:}
+      t=$(inicio -c "$c" --mem="$m" jobs/denoising_entrenar.sbatch)
+      [ -n "$t" ] || continue
+      if [ $(( $(a_epoch "$t") - E0 )) -le $(( ${MARGEN_MIN:-10} * 60 )) ]; then GPU_CPUS=$c; GPU_MEM=$m; break; fi
+    done
+  fi
+fi
+echo "Recursos por experimento de GPU: 1 GPU, ${GPU_CPUS} CPUs, ${GPU_MEM} RAM (2 experimentos a la vez)"
+GPU_RES=(-c "${GPU_CPUS}" --mem="${GPU_MEM}")
+
 # ------------------------------------------------------------------ TEST
 echo "=================== TEST (sbatch --test-only, no se encola nada) ==================="
 FALLAS=0
@@ -50,7 +74,7 @@ if [ "${PREPARAR:-1}" = "1" ]; then
   [ -n "${P_PREP:-}" ] || FALLAS=1
 fi
 read -r P_CLASICO T <<<"$(elegir_particion jobs/denoising_clasico.sbatch)"
-T_GPU=$(inicio jobs/denoising_entrenar.sbatch)
+T_GPU=$(inicio "${GPU_RES[@]}" jobs/denoising_entrenar.sbatch)
 read -r P_EVAL T_EVAL <<<"$(elegir_particion jobs/denoising_evaluar.sbatch)"
 N=0
 while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
@@ -88,7 +112,7 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
   VARS="ALL,FAMILIA=${FAM},METODO=${MET},EXP=${EXP},ARGS=${ARGS:-},PASOS=${PASOS:-4000}"
   NOMBRE="dn_${FAM}_${EXP}"
   if [ "${REC}" = "gpu" ]; then
-    ID=$(sbatch --parsable ${DEP} -J "${NOMBRE}" --export="${VARS}" \
+    ID=$(sbatch --parsable ${DEP} "${GPU_RES[@]}" -J "${NOMBRE}" --export="${VARS}" \
          -o "jobs/logs/${NOMBRE}_%j.out" -e "jobs/logs/${NOMBRE}_%j.err" jobs/denoising_entrenar.sbatch) || exit 1
     echo "$(printf '%-36s' "${FAM}/${EXP}") -> job $ID (gpu)"
   else
