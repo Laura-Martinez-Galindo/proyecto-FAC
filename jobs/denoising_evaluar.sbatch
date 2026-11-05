@@ -13,7 +13,7 @@
 # por familia, sobre sus imagenes de evaluacion. Resultado por familia en
 #   resultados/denoising/<RONDA>/<FAMILIA>/  (metricas_por_imagen.csv, resumen.csv con
 #   percentiles, ranking.csv, graficas/<metrica>.png con la distribucion por regimen)
-# Variables: RONDA (ronda1), FAMILIAS ("OPTICO_DDE OPTICO TERMICO"), IQA (p.ej. "niqe brisque")
+# Variables: RONDA (ronda1), FAMILIAS ("OPTICO_CORRELADO HAZE_DDE BAJA_LUZ TERMICO"), IQA (p.ej. "niqe brisque")
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
@@ -21,7 +21,7 @@ mkdir -p jobs/logs
 source fac_env311/bin/activate
 RONDA="${RONDA:-ronda1}"
 
-for F in ${FAMILIAS:-OPTICO_DDE OPTICO TERMICO}; do
+for F in ${FAMILIAS:-OPTICO_CORRELADO HAZE_DDE BAJA_LUZ TERMICO}; do
   EXPS=()
   for d in cache/denoising/${F}/*/salidas; do
     [ -d "$d" ] || continue

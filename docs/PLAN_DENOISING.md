@@ -37,21 +37,26 @@ las dos plantillas (`config/ejemplos_hud/`, ahora autocontenidas: solo el recort
 "Frames del video" cuenta solo frames cuya lectura anterior y siguiente del HUD coinciden y con
 vecinos ±2 del mismo régimen (no se usan las transiciones).
 
-## Paso 2. Familias de entrenamiento
+## Paso 2. Familias por régimen (decididas midiendo el ruido)
 
-No se encadenan modelos "uno por filtro": el ruido de DDE + HAZE no es la suma de dos ruidos
-independientes. Se entrena **un modelo por familia** (combinación que cambia el tipo de ruido) y se
-evalúa por régimen:
+`scripts/caracterizar_ruido.py` (job `caracterizar_ruido.sbatch`) midió 60 frames de cada régimen en
+cada video: nivel de ruido, correlación del ruido con el vecino a 1 y 2 px y por dirección, rayas,
+% de sal y pimienta, bloques de compresión y espectro (`resultados/ruido_regimenes/`). Las familias
+se definen por **régimen del HUD** (así un video nuevo se asigna leyendo el HUD) agrupando los que
+tienen el mismo **tipo** de ruido, en línea con la investigación de ruido por régimen:
 
-| Familia | Regímenes | Por qué juntos |
-|---|---|---|
-| OPTICO_DDE | HDEO_DDE_HAZE, HDEO_DDE, HDLL_DDE, SWIR_DDE | DDE domina: ruido en grumos |
-| OPTICO | HDEO_HAZE | ruido de sensor sin realce de bordes |
-| TERMICO | HDIR_C_WH, HDIR_C_WH_DDE, HDIR_M_WH_DDE | rayas de columna + ruido térmico, 1 canal |
+| Familia | Regímenes | Imágenes | Tipo de ruido medido |
+|---|---|---|---|
+| OPTICO_CORRELADO | HDEO_HAZE, HDEO_DDE, SWIR_DDE | 260 | en grumos (corr. 0,4-0,55 a 1 px, 0,1-0,35 a 2 px), sin impulsos; bloques en video3 |
+| HAZE_DDE | HDEO_DDE_HAZE | 823 | grano fino (corr. ~0 a 2 px) + 3,6 % sal y pimienta: la "cascada" HAZE→DDE |
+| BAJA_LUZ | HDLL_DDE | 13 | anisotrópico: correlado en vertical (0,48), no en horizontal (0,05) |
+| TERMICO | HDIR_C_WH, HDIR_C_WH_DDE, HDIR_M_WH_DDE | 20 | 1 canal; rayas horizontales y 13 % sal y pimienta en video2 |
 
-Definidas en `config/denoising/familias.json`. Si una imagen del dataset tiene un régimen que no está
-en ninguna familia, `listas_denoising.py` lo avisa. Si en la ronda 1 una familia muestra diferencias
-grandes entre sus regímenes, se separa.
+Hallazgos: el mismo régimen puede tener distinto **nivel** de ruido según el video (HDEO_DDE: 4,5×
+más en video2), por eso la familia se define por tipo y no por nivel; HAZE solo no es ruidoso, HAZE+DDE
+sí; SWIR no mostró píxeles defectuosos; video3 tiene los bloques de compresión más marcados
+(perfil Baseline). Con 3 videos no se puede separar del todo el efecto del filtro del efecto del video.
+Definidas en `config/denoising/familias.json`.
 
 ## Paso 3. Datos de los experimentos (lo mínimo suficiente) — `scripts/listas_denoising.py`
 
@@ -68,15 +73,15 @@ grandes entre sus regímenes, se separa.
 ## Paso 4. Ronda 1 — `config/denoising/ronda1.tsv` (una fila = un experimento)
 
 Todos los métodos están en `scripts/denoising.py` con la misma interfaz (`entrenar` / `inferir`) y
-todos sus hiperparámetros por parámetro (`python scripts/denoising.py entrenar -h`). Redes copiadas
-de los repos oficiales con su licencia (`scripts/fac_denoise/licencias/`); pérdidas reimplementadas
-siguiendo el código oficial.
+todos sus hiperparámetros por parámetro. Modelos elegidos según el tipo de ruido (matriz de decisión
+de la investigación de denoising autosupervisado):
 
-| Familia | Experimentos |
-|---|---|
-| OPTICO_DDE | UDVD oficial (5 frames), AP-BSN (config. SIDD: ruido real correlacionado), Blind2Unblind, NLM h=4 y h=8 |
-| OPTICO | UDVD oficial, Blind2Unblind, Neighbor2Neighbor, NLM h=4 y h=8 |
-| TERMICO | UDVD 1 canal, StructN2V (máscara vertical de 9 px, para rayas de columna), NLM h=6, destriping + NLM h=6 |
+| Familia | Experimentos | Por qué |
+|---|---|---|
+| OPTICO_CORRELADO | UDVD, AP-BSN, NLM | ruido en grumos: AP-BSN rompe la correlación con PD; UDVD usa los frames vecinos |
+| HAZE_DDE | UDVD, AP-BSN, Neighbor2Neighbor (L1), Blind2Unblind (L1), mediana+NLM | grano casi independiente + impulsos: L1 converge a la mediana |
+| BAJA_LUZ | UDVD, StructN2V vertical, Neighbor2Neighbor, NLM | ruido en una dirección: máscara orientada |
+| TERMICO | UDVD 1 canal, StructN2V horizontal, destriping horizontal + NLM | rayas horizontales |
 
 Mismo presupuesto: 4.000 pasos (copia en 2.000), parche/batch/lr del artículo de cada método. Si el
 batch no cabe en la GPU se baja a la mitad automáticamente (queda en `configuracion.json`).

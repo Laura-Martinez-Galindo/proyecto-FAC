@@ -144,6 +144,11 @@ class StructN2V(N2V):
     struct_defecto = 9
 
 
+def _norma(t, a):
+    """Media de t^2 (l2, la del articulo) o de |t| (l1, robusta a impulsos)."""
+    return torch.mean(t.abs()) if getattr(a, "perdida", "l2") == "l1" else torch.mean(t ** 2)
+
+
 # ---------------------------------------------------------------------------
 # Neighbor2Neighbor (train.py oficial)
 def _space_to_depth(x, bs):
@@ -196,7 +201,7 @@ class NB2NB(Metodo):
         lam = progreso * a.nb2nb_increase_ratio
         diff = out.float() - s2
         exp_diff = (d1 - d2).float()
-        return a.nb2nb_lambda1 * torch.mean(diff ** 2) + a.nb2nb_lambda2 * lam * torch.mean((diff - exp_diff) ** 2)
+        return (a.nb2nb_lambda1 * _norma(diff, a) + a.nb2nb_lambda2 * lam * _norma(diff - exp_diff, a))
 
     def aplicar(self, red, x, a):
         return red(x)
@@ -265,7 +270,7 @@ class B2U(Metodo):
             beta = a.b2u_lambda2 + (progreso - t1) * (a.b2u_increase_ratio - a.b2u_lambda2) / (t2 - t1)
         else:
             beta = a.b2u_increase_ratio
-        return a.b2u_lambda1 * torch.mean(diff ** 2) + torch.mean((diff + beta * exp_diff) ** 2)
+        return a.b2u_lambda1 * _norma(diff, a) + _norma(diff + beta * exp_diff, a)
 
     def aplicar(self, red, x, a):
         n, c, h, w = x.shape
@@ -347,11 +352,32 @@ class DestripeNLM(NLM):
         return super().clasico(im2, a)
 
 
-METODOS = {m.nombre: m for m in [UDVD(), N2V(), StructN2V(), NB2NB(), B2U(), APBSNm(), NLM(), DestripeNLM()]}
+class MedianaNLM(NLM):
+    """Linea base para sal y pimienta: mediana 3x3 SOLO en los pixeles atipicos (difieren mas de
+    --mediana-umbral de su mediana) y luego NLM."""
+    nombre = "mediana_nlm"
+
+    @staticmethod
+    def argumentos(p):
+        p.add_argument("--mediana-umbral", type=float, default=30.0)
+
+    def clasico(self, im, a):
+        med = cv2.medianBlur(np.ascontiguousarray(im), 3)
+        if med.ndim == 2:
+            med = med[..., None]
+        atip = np.abs(im.astype(np.int16) - med.astype(np.int16)).max(axis=2, keepdims=True) > a.mediana_umbral
+        im2 = np.where(atip, med, im).astype(np.uint8)
+        return super().clasico(im2, a)
+
+
+METODOS = {m.nombre: m for m in [UDVD(), N2V(), StructN2V(), NB2NB(), B2U(), APBSNm(), NLM(), DestripeNLM(),
+                                 MedianaNLM()]}
 
 
 def argumentos_todos(p):
     p.add_argument("--unet-canales", type=int, default=48, help="ancho de la UNet (n2v, nb2nb, b2u)")
+    p.add_argument("--perdida", choices=["l2", "l1"], default="l2",
+                   help="nb2nb y b2u: l2 = la del articulo; l1 = robusta a sal y pimienta (converge a la mediana)")
     vistos = set()
     for m in METODOS.values():
         f = type(m).__dict__.get("argumentos")

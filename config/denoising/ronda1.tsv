@@ -1,20 +1,25 @@
 # RONDA 1 de denoising: un experimento por fila. Lo lee jobs/lanzar_ronda1.sh.
-# Mismo presupuesto para todos los entrenables: 4000 pasos (instantanea en 2000), parche/batch/lr
-# del articulo de cada metodo (ver `python scripts/denoising.py metodos`).
-# recurso: gpu = entrena + infiere (jobs/denoising_entrenar.sbatch)
-#          cpu = metodo clasico, solo infiere (jobs/denoising_clasico.sbatch)
+# Familias POR REGIMEN (config/denoising/familias.json), elegidas con la caracterizacion del ruido
+# (resultados/ruido_regimenes) y la investigacion de ruido por regimen:
+#   OPTICO_CORRELADO  HDEO_HAZE, HDEO_DDE, SWIR_DDE   ruido en grumos (correlacion 0,4-0,55 a 1 px)
+#   HAZE_DDE          HDEO_DDE_HAZE                   grano fino + sal y pimienta (3,6 %)
+#   BAJA_LUZ          HDLL_DDE                        ruido en una direccion (vertical)
+#   TERMICO           HDIR_*                          rayas horizontales + sal y pimienta (v2), 1 canal
+# Mismo presupuesto para todos los entrenables: 4000 pasos (copia en 2000), parche/batch/lr del
+# articulo de cada metodo. recurso: gpu = entrena + infiere; cpu = metodo clasico (solo infiere).
 # experimento	familia	metodo	recurso	argumentos
-udvd_r1	OPTICO_DDE	udvd	gpu	--batch 8 --amp
-apbsn_r1	OPTICO_DDE	apbsn	gpu
-b2u_r1	OPTICO_DDE	b2u	gpu	--amp
-nlm_h4	OPTICO_DDE	nlm	cpu	--nlm-h 4 --nlm-h-color 4
-nlm_h8	OPTICO_DDE	nlm	cpu	--nlm-h 8 --nlm-h-color 8
-udvd_r1	OPTICO	udvd	gpu	--batch 8 --amp
-b2u_r1	OPTICO	b2u	gpu	--amp
-nb2nb_r1	OPTICO	nb2nb	gpu	--amp
-nlm_h4	OPTICO	nlm	cpu	--nlm-h 4 --nlm-h-color 4
-nlm_h8	OPTICO	nlm	cpu	--nlm-h 8 --nlm-h-color 8
+udvd_r1	OPTICO_CORRELADO	udvd	gpu	--batch 8 --amp
+apbsn_r1	OPTICO_CORRELADO	apbsn	gpu	
+nlm_h5	OPTICO_CORRELADO	nlm	cpu	--nlm-h 5 --nlm-h-color 5
+udvd_r1	HAZE_DDE	udvd	gpu	--batch 8 --amp
+apbsn_r1	HAZE_DDE	apbsn	gpu	
+nb2nb_l1_r1	HAZE_DDE	nb2nb	gpu	--amp --perdida l1
+b2u_l1_r1	HAZE_DDE	b2u	gpu	--amp --perdida l1
+mediana_nlm_h8	HAZE_DDE	mediana_nlm	cpu	--nlm-h 8 --nlm-h-color 8 --mediana-umbral 30
+udvd_r1	BAJA_LUZ	udvd	gpu	--batch 8 --amp
+structn2v_v_r1	BAJA_LUZ	structn2v	gpu	--amp --struct-largo 9 --struct-eje vertical
+nb2nb_r1	BAJA_LUZ	nb2nb	gpu	--amp
+nlm_h6	BAJA_LUZ	nlm	cpu	--nlm-h 6 --nlm-h-color 6
 udvd_r1	TERMICO	udvd	gpu	--canales 1 --batch 8 --amp
-structn2v_r1	TERMICO	structn2v	gpu	--canales 1 --amp --struct-largo 9 --struct-eje vertical
-nlm_h6	TERMICO	nlm	cpu	--canales 1 --nlm-h 6
-destripe_nlm_h6	TERMICO	destripe_nlm	cpu	--canales 1 --nlm-h 6 --destripe-sigma 3
+structn2v_h_r1	TERMICO	structn2v	gpu	--canales 1 --amp --struct-largo 9 --struct-eje horizontal
+destripe_h_nlm_h6	TERMICO	destripe_nlm	cpu	--canales 1 --nlm-h 6 --destripe-sigma 3 --destripe-eje horizontal

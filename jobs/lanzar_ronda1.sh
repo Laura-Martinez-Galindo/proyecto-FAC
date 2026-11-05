@@ -1,60 +1,86 @@
 #!/usr/bin/env bash
 # Lanza la RONDA 1 completa de denoising, en orden y con dependencias:
 #
-#   1) dn_preparar   regimenes con las plantillas nuevas + listas por familia + mascaras HUD
+#   1) dn_preparar   listas por familia (config/denoising/familias.json) + mascaras HUD del dataset
 #   2) un job por fila de config/denoising/ronda1.tsv (GPU = entrena+infiere, CPU = clasico),
-#      todos esperan a (1). Los de GPU piden 1 GPU cada uno: Slurm corre a la vez los que
-#      permita tu limite (2 GPUs) y el resto espera turno solo.
+#      todos esperan a (1). Cada job de GPU pide 1 GPU: Slurm corre a la vez los que permita tu
+#      limite (2 GPUs) y el resto espera turno solo.
 #   3) dn_evaluar    compara todo, familia por familia; espera a que terminen TODOS los de (2)
 #                    (aunque alguno falle, evalua los que si quedaron).
 #
-# Los jobs de CPU se mandan a la particion que Slurm estima que arranca antes
-# (sbatch --test-only en short/express/medium/long), para que no queden en PD.
+# ANTES de mandar nada hace `sbatch --test-only` de CADA job (preparar, GPU, CPU, evaluar) e
+# imprime cuando arrancaria. Si alguno no tiene donde correr, no manda ninguno.
+# Los de CPU van a la particion que arranca antes (short/express/medium/long/bigmem).
 #
-# Uso (desde la raiz del repo, en el nodo de login):
-#   bash jobs/lanzar_ronda1.sh                 # todo
-#   PRUEBA=1 bash jobs/lanzar_ronda1.sh        # solo muestra lo que mandaria
+# Uso (desde la raiz del repo):
+#   PRUEBA=1 bash jobs/lanzar_ronda1.sh        # SOLO el test: muestra la tabla, no manda nada
+#   bash jobs/lanzar_ronda1.sh                 # test y, si todo entra, manda todo
 #   SOLO=TERMICO bash jobs/lanzar_ronda1.sh    # una familia
 #   PREPARAR=0 bash jobs/lanzar_ronda1.sh      # ya existen las listas: no repetir (1)
-#   REGIMENES=0 bash jobs/lanzar_ronda1.sh     # repetir listas pero no la lectura de regimenes
+#   REGIMENES=1 bash jobs/lanzar_ronda1.sh     # volver a leer regimenes antes de las listas
 #   PASOS=1000 bash jobs/lanzar_ronda1.sh      # presupuesto distinto
 set -uo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p jobs/logs
 TABLA="${TABLA:-config/denoising/ronda1.tsv}"
-PARTICIONES_CPU="${PARTICIONES_CPU:-short express medium long}"
+PARTICIONES_CPU="${PARTICIONES_CPU:-short express medium long bigmem}"
+FAMILIAS=$(python3 -c "import json;print(' '.join(json.load(open('config/denoising/familias.json'))))" 2>/dev/null \
+           || echo "OPTICO_CORRELADO HAZE_DDE BAJA_LUZ TERMICO")
 
-# Particion de CPU que arranca antes para (cpus, mem, tiempo)
-elegir_particion() {
-  local cpus=$1 mem=$2 tiempo=$3 mejor="" mejor_t="9999"
+inicio() {  # inicio <args de sbatch...> -> fecha estimada de arranque (vacio si no entra)
+  sbatch --test-only "$@" 2>&1 | grep -o "to start at [0-9T:-]*" | awk '{print $4}'
+}
+
+elegir_particion() {  # elegir_particion <args sin -p> -> "particion fecha"
+  local mejor="" mejor_t="9999"
   for p in ${PARTICIONES_CPU}; do
-    local t
-    t=$(sbatch --test-only -p "$p" -c "$cpus" --mem="$mem" -t "$tiempo" --wrap "true" 2>&1 \
-        | grep -o "to start at [0-9T:-]*" | awk '{print $4}')
+    local t; t=$(inicio -p "$p" "$@")
     [ -n "$t" ] || continue
     if [[ "$t" < "$mejor_t" ]]; then mejor_t=$t; mejor=$p; fi
   done
-  echo "${mejor:-short}"
+  [ -n "$mejor" ] && echo "$mejor $mejor_t"
 }
 
-enviar() {  # enviar <args de sbatch...>  -> imprime el JobID
-  if [ "${PRUEBA:-0}" = "1" ]; then
-    echo "  [PRUEBA] sbatch $*" >&2
-    echo "PRUEBA$RANDOM"
+# ------------------------------------------------------------------ TEST
+echo "=================== TEST (sbatch --test-only, no se encola nada) ==================="
+FALLAS=0
+if [ "${PREPARAR:-1}" = "1" ]; then
+  read -r P_PREP T <<<"$(elegir_particion jobs/denoising_preparar.sbatch)"
+  printf "%-36s %-8s %s\n" "preparar" "${P_PREP:-NINGUNA}" "${T:-NO ENTRA}"
+  [ -n "${P_PREP:-}" ] || FALLAS=1
+fi
+read -r P_CLASICO T <<<"$(elegir_particion jobs/denoising_clasico.sbatch)"
+T_GPU=$(inicio jobs/denoising_entrenar.sbatch)
+read -r P_EVAL T_EVAL <<<"$(elegir_particion jobs/denoising_evaluar.sbatch)"
+N=0
+while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
+  [[ -z "${EXP}" || "${EXP}" == \#* ]] && continue
+  [[ -n "${SOLO:-}" && "${FAM}" != "${SOLO}" ]] && continue
+  N=$((N + 1))
+  if [ "${REC}" = "gpu" ]; then
+    printf "%-36s %-8s %s\n" "${FAM}/${EXP}" "gpu" "${T_GPU:-NO ENTRA}"
+    [ -n "${T_GPU}" ] || FALLAS=1
   else
-    sbatch --parsable "$@"
+    printf "%-36s %-8s %s\n" "${FAM}/${EXP}" "${P_CLASICO:-NINGUNA}" "${T:-NO ENTRA}"
+    [ -n "${P_CLASICO:-}" ] || FALLAS=1
   fi
-}
+done < "${TABLA}"
+printf "%-36s %-8s %s\n" "evaluar" "${P_EVAL:-NINGUNA}" "${T_EVAL:-NO ENTRA}"
+[ -n "${P_EVAL:-}" ] || FALLAS=1
+echo "(las fechas son si arrancaran YA; los que dependen de otro esperan a que ese termine)"
+if [ "$FALLAS" = "1" ]; then echo "!! Hay jobs que no entran en ninguna particion: no se manda nada."; exit 2; fi
+if [ "${PRUEBA:-0}" = "1" ]; then echo "[PRUEBA] todo entra; no se mando nada."; exit 0; fi
+[ "$N" -gt 0 ] || { echo "No hay experimentos en ${TABLA}"; exit 1; }
 
+# ------------------------------------------------------------------ ENVIO
+echo
+echo "=================== ENVIO ==================="
 DEP=""
 if [ "${PREPARAR:-1}" = "1" ]; then
-  P=$(elegir_particion 8 16G 02:00:00)
-  ID=$(enviar -p "$P" --export=ALL,REGIMENES="${REGIMENES:-1}" jobs/denoising_preparar.sbatch) || exit 1
-  echo "preparar          -> job $ID ($P)"
+  ID=$(sbatch --parsable -p "$P_PREP" --export=ALL,REGIMENES="${REGIMENES:-0}" jobs/denoising_preparar.sbatch) || exit 1
+  echo "preparar                             -> job $ID ($P_PREP)"
   DEP="--dependency=afterok:${ID}"
 fi
-
-P_CLASICO=$(elegir_particion 4 8G 01:00:00)
 IDS=()
 while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
   [[ -z "${EXP}" || "${EXP}" == \#* ]] && continue
@@ -62,23 +88,20 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
   VARS="ALL,FAMILIA=${FAM},METODO=${MET},EXP=${EXP},ARGS=${ARGS:-},PASOS=${PASOS:-4000}"
   NOMBRE="dn_${FAM}_${EXP}"
   if [ "${REC}" = "gpu" ]; then
-    ID=$(enviar ${DEP} -J "${NOMBRE}" --export="${VARS}" \
+    ID=$(sbatch --parsable ${DEP} -J "${NOMBRE}" --export="${VARS}" \
          -o "jobs/logs/${NOMBRE}_%j.out" -e "jobs/logs/${NOMBRE}_%j.err" jobs/denoising_entrenar.sbatch) || exit 1
-    echo "$(printf '%-34s' "${FAM}/${EXP}") -> job $ID (gpu)"
+    echo "$(printf '%-36s' "${FAM}/${EXP}") -> job $ID (gpu)"
   else
-    ID=$(enviar ${DEP} -p "${P_CLASICO}" -J "${NOMBRE}" --export="${VARS}" \
+    ID=$(sbatch --parsable ${DEP} -p "${P_CLASICO}" -J "${NOMBRE}" --export="${VARS}" \
          -o "jobs/logs/${NOMBRE}_%j.out" -e "jobs/logs/${NOMBRE}_%j.err" jobs/denoising_clasico.sbatch) || exit 1
-    echo "$(printf '%-34s' "${FAM}/${EXP}") -> job $ID (${P_CLASICO})"
+    echo "$(printf '%-36s' "${FAM}/${EXP}") -> job $ID (${P_CLASICO})"
   fi
   IDS+=("$ID")
 done < "${TABLA}"
-
-if [ ${#IDS[@]} -gt 0 ]; then
-  P=$(elegir_particion 8 16G 01:00:00)
-  LISTA=$(IFS=:; echo "${IDS[*]}")
-  ID=$(enviar -p "$P" --dependency=afterany:"${LISTA}" --export=ALL,FAMILIAS="${SOLO:-OPTICO_DDE OPTICO TERMICO}" \
-       jobs/denoising_evaluar.sbatch) || exit 1
-  echo "evaluar           -> job $ID ($P)"
-fi
+LISTA=$(IFS=:; echo "${IDS[*]}")
+ID=$(sbatch --parsable -p "$P_EVAL" --dependency=afterany:"${LISTA}" \
+     --export=ALL,FAMILIAS="${SOLO:-$FAMILIAS}" jobs/denoising_evaluar.sbatch) || exit 1
+echo "evaluar                              -> job $ID ($P_EVAL)"
 echo
-echo "Seguimiento:  squeue -u \$USER     |  logs en jobs/logs/   |  bash jobs/recursos_hypatia.sh"
+echo "Seguimiento:  squeue -u \$USER   (PD con razon Dependency = esperando a otro job, es normal)"
+echo "Si 'preparar' falla, los demas quedan esperando para siempre: scancel -u \$USER y revisar jobs/logs/"
