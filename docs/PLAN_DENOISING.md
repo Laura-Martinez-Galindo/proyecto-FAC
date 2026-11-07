@@ -113,3 +113,29 @@ imagen. Mismo nombre y etiquetas que `dataset_original`, con `correspondencia.cs
 ## Paso 7. Impacto en YOLO
 
 Lo corre quien haga los splits, con las tres versiones y la misma partición.
+
+## Ronda 2 (7 nov 2026): solo HDEO_DDE_HAZE (video2)
+
+Mirando recortes ampliados de la ronda 1 (`_claude_informe/zoom_*.png`):
+
+* **Video1 (HDEO_HAZE, sigma 0,4) y video3 (HDEO_DDE, sigma 0,24) van SIN denoising.** Su ruido esta
+  por debajo del nivel de cuantizacion de 8 bits (~0,3): no se ve. Lo que tienen son bloques de
+  compresion H.264, y las redes que los quitan (AP-BSN, MM-BSN) tambien desenfocan detalle real.
+* **Video2 (74 % del dataset) si tiene ruido visible** (grano + sal y pimienta). AP-BSN lo limpia
+  (grano 6,7 -> 1,5) pero corre el color (croma 0,82); NB2NB y B2U casi no limpiaron y lavaron el
+  color; UDVD mete una rejilla de cuadritos.
+
+Cambios:
+
+1. `scripts/color_original.py`: brillo (Y) de la red + color (Cr, Cb) de la entrada suavizado. La
+   evaluacion crea `<exp>_ycolor` de todos los experimentos automaticamente.
+2. `scripts/evaluar_denoising.py`, metricas nuevas: `grano` (el ruido de 2-4 px que si se ve; el
+   ranking ordena por esta), `croma_ratio`, `delta_e_suave`, `bloques_8px` y
+   `corr_residuo_temporal` (ruido vs textura con el frame vecino alineado por flujo optico).
+   Los bordes se calculan sobre la imagen con mediana 5x5 (el grano ya no cuenta como borde).
+   El ranking descarta solo por color; retencion y corr. con bordes quedan como avisos.
+3. `config/denoising/ronda2.tsv`: MM-BSN, AP-BSN con 8000 pasos, NB2NB y B2U sin AMP, Mediana+NLM h12.
+
+```
+RONDA=ronda2 TABLA=config/denoising/ronda2.tsv SOLO=HDEO_DDE_HAZE PREPARAR=0 bash jobs/lanzar_ronda1.sh
+```

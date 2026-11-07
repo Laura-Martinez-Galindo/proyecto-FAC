@@ -13,15 +13,27 @@
 # por familia, sobre sus imagenes de evaluacion. Resultado por familia en
 #   resultados/denoising/<RONDA>/<FAMILIA>/  (metricas_por_imagen.csv, resumen.csv con
 #   percentiles, ranking.csv, graficas/<metrica>.png con la distribucion por regimen)
-# Variables: RONDA (ronda1), FAMILIAS ("OPTICO_CORRELADO HAZE_DDE BAJA_LUZ TERMICO"), IQA (p.ej. "niqe brisque")
+# Antes de evaluar, a cada experimento <E> le crea <E>_ycolor: el brillo de su salida con el color de la
+# entrada (scripts/color_original.py), para separar "limpia bien" de "cambia el color".
+# Variables: RONDA (ronda1), FAMILIAS (por defecto las de config/denoising/familias.json),
+#   IQA (p.ej. "niqe brisque"), COLOR_ORIGINAL (1; 0 = no crear las variantes _ycolor)
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p jobs/logs
 source fac_env311/bin/activate
 RONDA="${RONDA:-ronda1}"
+FAMILIAS="${FAMILIAS:-$(python -c "import json;print(' '.join(json.load(open('config/denoising/familias.json'))))")}"
 
-for F in ${FAMILIAS:-OPTICO_CORRELADO HAZE_DDE BAJA_LUZ TERMICO}; do
+for F in ${FAMILIAS}; do
+  if [ "${COLOR_ORIGINAL:-1}" = "1" ]; then
+    for d in cache/denoising/${F}/*/salidas; do
+      E="$(basename "$(dirname "$d")")"
+      [[ "$E" == *_ycolor ]] && continue
+      python scripts/color_original.py --entrada datasets/dataset_sin_hud/images --base "$d" \
+          --salida "cache/denoising/${F}/${E}_ycolor/salidas"
+    done
+  fi
   EXPS=()
   for d in cache/denoising/${F}/*/salidas; do
     [ -d "$d" ] || continue
@@ -41,7 +53,7 @@ done
 tar -cf "resultados/denoising/${RONDA}.tar" -C resultados/denoising "${RONDA}" listas
 # muestras para mirar a ojo: 4 imagenes limpias + su residuo por experimento, y los logs de los carriles
 MUESTRAS=()
-for F in ${FAMILIAS:-OPTICO_CORRELADO HAZE_DDE BAJA_LUZ TERMICO}; do
+for F in ${FAMILIAS}; do
   for d in cache/denoising/${F}/*/salidas; do
     [ -d "$d" ] || continue
     while IFS= read -r f; do MUESTRAS+=("$f"); done < <(ls "$d"/*.png 2>/dev/null | head -4; ls "$d"/residuo/*.png 2>/dev/null | head -4)

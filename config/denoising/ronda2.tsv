@@ -1,0 +1,16 @@
+# RONDA 2 de denoising: SOLO HDEO_DDE_HAZE (video2, 74 % del dataset). Video1 (HDEO_HAZE, sigma 0,4)
+# y video3 (HDEO_DDE, sigma 0,24) tienen ruido por debajo del nivel de cuantizacion (~0,3) y van sin
+# denoising (lo que tienen son bloques de compresion, no ruido de sensor).
+# Que se prueba (las listas de entrenamiento/evaluacion son las mismas de la ronda 1):
+#   mmbsn_r2         MM-BSN no se corrio en video2 en la ronda 1 (mejor candidato junto a AP-BSN)
+#   apbsn_8k         AP-BSN (ganador visual de la ronda 1) con el doble de pasos
+#   *_sinamp         NB2NB y B2U SIN precision mixta: diagnostico de si AMP les daño el color
+#                    y de por que casi no limpiaron (mismo presupuesto de 4000 pasos)
+#   mediana_nlm_h12  el clasico que conserva el color, mas fuerte (h 8 -> 12)
+# Ademas la evaluacion crea <exp>_ycolor de TODOS (ronda 1 y 2): brillo de la red + color original.
+# experimento	familia	metodo	recurso	argumentos
+apbsn_8k	HDEO_DDE_HAZE	apbsn	gpu	--pasos 8000
+b2u_l1_sinamp	HDEO_DDE_HAZE	b2u	gpu	--perdida l1
+mmbsn_r2	HDEO_DDE_HAZE	mmbsn	gpu	
+nb2nb_l1_sinamp	HDEO_DDE_HAZE	nb2nb	gpu	--perdida l1
+mediana_nlm_h12	HDEO_DDE_HAZE	mediana_nlm	cpu	--nlm-h 12 --nlm-h-color 12 --mediana-umbral 30

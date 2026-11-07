@@ -16,6 +16,7 @@
 # TODO_EN_GPU=0 vuelve al esquema con carril CPU + job de evaluacion aparte.
 #
 # Uso (desde la raiz del repo):
+#   RONDA=ronda2 TABLA=config/denoising/ronda2.tsv SOLO=HDEO_DDE_HAZE PREPARAR=0 bash jobs/lanzar_ronda1.sh
 #   PRUEBA=1 bash jobs/lanzar_ronda1.sh            # solo el test
 #   bash jobs/lanzar_ronda1.sh                     # test y envio
 #   (con TODO_EN_GPU=1 las listas tambien se arman dentro del primer carril que arranca)
@@ -60,7 +61,10 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
   [[ -z "${EXP}" || "${EXP}" == \#* ]] && continue
   [[ -n "${SOLO:-}" && "${FAM}" != "${SOLO}" ]] && continue
   if [ "${REC}" = "gpu" ] || [ "${TODO_EN_GPU:-1}" = "1" ]; then
-    m=$(( $(minutos_de "$MET") * ${PASOS:-4000} / 4000 + 5 ))
+    P=$(echo " ${ARGS:-} " | grep -o -- "--pasos [0-9]*" | awk '{print $2}'); P=${P:-${PASOS:-4000}}
+    m=$(( $(minutos_de "$MET") * P / 4000 ))
+    [[ " ${ARGS:-} " == *" --amp "* ]] || [[ "$MET" =~ ^(apbsn|mmbsn)$ ]] || m=$(( m * 3 / 2 ))  # sin AMP es mas lento
+    m=$(( m + 5 ))
     [ "${REC}" = "gpu" ] || m=15
     k=1; for ((i=2; i<=CARRILES; i++)); do [ "${CARGA[$i]}" -lt "${CARGA[$k]}" ] && k=$i; done
     printf "%s\t%s\t%s\t%s\t%s\n" "$EXP" "$FAM" "$MET" "$REC" "${ARGS:-}" >> "jobs/carriles/${RONDA}_carril${k}.tsv"
@@ -184,7 +188,7 @@ for ((i=1; i<=CARRILES; i++)); do
   f="jobs/carriles/${RONDA}_carril${i}.tsv"
   [ -s "$f" ] || continue
   ID=$(sbatch --parsable ${DEP} "${GPU_RES[@]}" -J "dn_gpu${i}" \
-       --export=ALL,CARRIL="$f",PASOS="${PASOS:-4000}",EVALUAR_AL_FINAL="${TODO_EN_GPU:-1}",RONDA="${RONDA}",PREPARAR_LISTAS="${PREP_CARRIL}" \
+       --export=ALL,CARRIL="$f",PASOS="${PASOS:-4000}",EVALUAR_AL_FINAL="${TODO_EN_GPU:-1}",RONDA="${RONDA}",PREPARAR_LISTAS="${PREP_CARRIL}",FAMILIAS="${SOLO:-$FAMILIAS}" \
        -o "jobs/logs/dn_gpu${i}_%j.out" -e "jobs/logs/dn_gpu${i}_%j.err" jobs/denoising_carril.sbatch) \
        || { echo "!! no se pudo enviar el carril GPU $i"; exit 1; }
   echo "carril GPU $i               -> job $ID (gpu)"
