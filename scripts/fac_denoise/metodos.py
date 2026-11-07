@@ -194,10 +194,13 @@ class NB2NB(Metodo):
     def perdida(self, red, x, progreso, a):
         m1, m2 = _mascaras_par(x)
         s1, s2 = _subimagen(x, m1), _subimagen(x, m2)
+        # OJO: primero la pasada CON gradiente. Con AMP (autocast) la primera pasada guarda en cache
+        # los pesos convertidos a fp16; si esa primera pasada es bajo no_grad, la cache queda sin
+        # gradiente y la segunda pasada no entrena ("element 0 of tensors does not require grad").
+        out = red(s1)
         with torch.no_grad():
             den = red(x)
         d1, d2 = _subimagen(den, m1), _subimagen(den, m2)
-        out = red(s1)
         lam = progreso * a.nb2nb_increase_ratio
         diff = out.float() - s2
         exp_diff = (d1 - d2).float()

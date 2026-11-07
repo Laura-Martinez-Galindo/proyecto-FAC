@@ -39,4 +39,14 @@ done
 
 # un solo archivo para traer al PC
 tar -cf "resultados/denoising/${RONDA}.tar" -C resultados/denoising "${RONDA}" listas
+# muestras para mirar a ojo: 4 imagenes limpias + su residuo por experimento, y los logs de los carriles
+MUESTRAS=()
+for F in ${FAMILIAS:-OPTICO_CORRELADO HAZE_DDE BAJA_LUZ TERMICO}; do
+  for d in cache/denoising/${F}/*/salidas; do
+    [ -d "$d" ] || continue
+    while IFS= read -r f; do MUESTRAS+=("$f"); done < <(ls "$d"/*.png 2>/dev/null | head -4; ls "$d"/residuo/*.png 2>/dev/null | head -4)
+  done
+done
+tar -cf "resultados/denoising/${RONDA}_muestras.tar" "${MUESTRAS[@]}" $(ls jobs/logs/dn_gpu*.out 2>/dev/null)
+echo "Muestras: resultados/denoising/${RONDA}_muestras.tar"
 echo "Para revisar en el PC: resultados/denoising/${RONDA}.tar"

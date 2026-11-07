@@ -86,7 +86,9 @@ if [ "${EVALUAR_AL_FINAL:-0}" = "1" ]; then
   if [ "$otros" -eq 0 ]; then
     echo
     echo "=================== EVALUACION (ultimo carril en terminar) ==================="
-    bash jobs/denoising_evaluar.sbatch
+    # evaluar las familias ACTUALES (config/denoising/familias.json), no las de un default viejo
+    FAMILIAS="${FAMILIAS:-$(python -c "import json;print(' '.join(json.load(open('config/denoising/familias.json'))))")}" \
+      bash jobs/denoising_evaluar.sbatch
   else
     echo "Queda otro carril corriendo: la evaluacion la hace el ultimo en terminar."
   fi
