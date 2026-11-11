@@ -5,7 +5,8 @@
 # Ranking por % de reduccion de NIQE y BRISQUE frente al original (meta de la propuesta: >= 8 %),
 # con MUSIQ, CLIP-IQA, grano, color, bloques y ruido-vs-textura de apoyo.
 # El orden es de mas a menos prometedor, para que lo primero que termine sea lo mas util.
-# Tanda 1 (esta tabla). Tandas 2 y 3 (resto de espaciales y temporales) se agregan al final.
+# Tanda 1 y tanda 2 (espaciales). recurso: gpu = entrena con los frames e infiere; zs = zero-shot (una red por
+# imagen, sin los frames; se evalua en --max-imagenes); cpu = clasico (corre en el carril de GPU igual).
 # experimento	familia	metodo	recurso	argumentos
 apbsn_r3	HDEO_DDE_HAZE	apbsn	gpu	
 apbsn_r3	HDEO_HAZE	apbsn	gpu	
@@ -67,3 +68,34 @@ nlm_r3	HDEO_DDE	nlm	cpu	--nlm-h 3 --nlm-h-color 3
 mediana_nlm_r3	HDEO_DDE_HAZE	mediana_nlm	cpu	--nlm-h 8 --nlm-h-color 8 --mediana-umbral 30
 mediana_nlm_r3	HDEO_HAZE	mediana_nlm	cpu	--nlm-h 4 --nlm-h-color 4 --mediana-umbral 30
 mediana_nlm_r3	HDEO_DDE	mediana_nlm	cpu	--nlm-h 3 --nlm-h-color 3 --mediana-umbral 30
+# ---- Tanda 2 (espaciales) ----
+cvfsid_r3	HDEO_DDE_HAZE	cvfsid	gpu	
+cvfsid_r3	HDEO_HAZE	cvfsid	gpu	
+cvfsid_r3	HDEO_DDE	cvfsid	gpu	
+noise2score_r3	HDEO_DDE_HAZE	noise2score	gpu	
+noise2score_r3	HDEO_HAZE	noise2score	gpu	
+noise2score_r3	HDEO_DDE	noise2score	gpu	
+n2v2_r3	HDEO_DDE_HAZE	n2v2	gpu	
+n2v2_r3	HDEO_HAZE	n2v2	gpu	
+n2v2_r3	HDEO_DDE	n2v2	gpu	
+self2self_r3	HDEO_DDE_HAZE	self2self	gpu	
+self2self_r3	HDEO_HAZE	self2self	gpu	
+self2self_r3	HDEO_DDE	self2self	gpu	
+cut2self_r3	HDEO_DDE_HAZE	cut2self	gpu	
+cut2self_r3	HDEO_HAZE	cut2self	gpu	
+cut2self_r3	HDEO_DDE	cut2self	gpu	
+gr2r_r3	HDEO_DDE_HAZE	gr2r	gpu	
+gr2r_r3	HDEO_HAZE	gr2r	gpu	
+gr2r_r3	HDEO_DDE	gr2r	gpu	
+p2n_r3	HDEO_DDE_HAZE	p2n	gpu	--pasos 1000 --p2n-base cache/denoising/HDEO_DDE_HAZE/nb2nb_r3/modelo.pt
+p2n_r3	HDEO_HAZE	p2n	gpu	--pasos 1000 --p2n-base cache/denoising/HDEO_HAZE/nb2nb_r3/modelo.pt
+p2n_r3	HDEO_DDE	p2n	gpu	--pasos 1000 --p2n-base cache/denoising/HDEO_DDE/nb2nb_r3/modelo.pt
+zsn2n_zs_r3	HDEO_DDE_HAZE	zsn2n_zs	zs	--max-imagenes 100
+zsn2n_zs_r3	HDEO_HAZE	zsn2n_zs	zs	--max-imagenes 100
+zsn2n_zs_r3	HDEO_DDE	zsn2n_zs	zs	--max-imagenes 100
+noise2detail_r3	HDEO_DDE_HAZE	noise2detail	zs	--max-imagenes 100
+noise2detail_r3	HDEO_HAZE	noise2detail	zs	--max-imagenes 100
+noise2detail_r3	HDEO_DDE	noise2detail	zs	--max-imagenes 100
+dip_r3	HDEO_DDE_HAZE	dip	zs	--max-imagenes 30
+dip_r3	HDEO_HAZE	dip	zs	--max-imagenes 30
+dip_r3	HDEO_DDE	dip	zs	--max-imagenes 30

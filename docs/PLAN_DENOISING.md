@@ -159,8 +159,11 @@ Tanda 1 (config/denoising/ronda3.tsv, 60 experimentos = 20 metodos x 3 regimenes
 * Reimplementados del articulo: Noise2Self, Noise2Same, R2R (sigma estimada), ZS-N2N, N2V, StructN2V.
 * Clasicos: BM3D (paquete oficial), filtro guiado, mediana adaptativa, NLM, mediana+NLM.
 
-Tanda 2 (pendiente): CVF-SID, Noise2Score, Self2Self+, DIP, SASS, MASH, TM-BSN, NSP, Cut2Self,
-Filter2Noise, Noise2Info, Positive2Negative*, ZS-KAN*, SelfFormer*, SwinIA*, GR2R, PN2V, N2V2.
+Tanda 2 (scripts/fac_denoise/metodos_tanda2.py, 30 experimentos mas): CVF-SID, Noise2Score, N2V2,
+Self2Self y Cut2Self (red de referencia), GR2R, Positive2Negative* (ajusta la UNet de NB2NB del mismo
+regimen) y, zero-shot (una red por imagen, evaluados en 100 o 30 imagenes): ZS-N2N, Noise2Detail y DIP.
+Pendientes de la tanda 2: SASS, MASH*, TM-BSN, NSP, ZS-KAN*, SelfFormer*, SwinIA*, Filter2Noise,
+Self2Self+; PN2V no aplica (modelo de ruido por histograma para imagenes en gris de microscopia).
 Tanda 3 (pendiente, temporales): MF2F, TAP, STBN, PCST, RDRF*, SAVeD, F2R (con guia autosupervisada).
 (* = sin codigo publico: reimplementacion desde el articulo.) Metricas temporales (warping error,
 uPSNR) en la tanda 3. Los ensembles y stacks se arman sobre los ganadores.

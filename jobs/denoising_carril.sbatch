@@ -66,6 +66,14 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS MIN; do
   SAL="${BASE_CACHE}/${FAM}/${EXP}"
   NLISTA=$(( $(wc -l < "${L}/${FAM}_evaluacion.csv") - 1 ))
   [ -n "${MAXIMG}" ] && NLISTA=2
+  MI=$(echo " ${ARGS:-} " | grep -o -- "--max-imagenes [0-9]*" | awk '{print $2}')
+  [ -n "$MI" ] && [ "$MI" -lt "$NLISTA" ] && NLISTA=$MI
+  [ "${HUMO:-0}" = "1" ] && ARGS="${ARGS//cache\/denoising\//cache\/denoising_humo\/}"
+  BASE=$(echo " ${ARGS:-} " | grep -o -- "--p2n-base [^ ]*" | awk '{print $2}')
+  if [ -n "$BASE" ] && [ ! -f "$BASE" ]; then
+    echo "== ${FAM}/${EXP}: falta su modelo base (${BASE}); queda para el proximo envio"
+    resumen+=("$(printf '%-38s %-10s' "${FAM}/${EXP}" "PENDIENTE")"); continue
+  fi
   NHECHAS=$(ls "${SAL}/salidas"/*.png 2>/dev/null | wc -l)
   if [ -f "${SAL}/salidas/inferencia.json" ] && [ "${NHECHAS}" -ge "${NLISTA}" ]; then
     echo "== ${FAM}/${EXP}: ya hecho (${NHECHAS} imagenes), se salta"
@@ -88,6 +96,10 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS MIN; do
       && python scripts/denoising.py inferir --checkpoint "${SAL}/modelo.pt" \
         --lista "${L}/${FAM}_evaluacion.csv" --entrada datasets/dataset_sin_hud/images \
         --salida "${SAL}/salidas" --residuo ${INF_ARGS} ${MAXIMG}
+  elif [ "${REC}" = "zs" ]; then  # zero-shot: una red por imagen, en la GPU
+    python scripts/denoising.py inferir --metodo "${MET}" \
+        --lista "${L}/${FAM}_evaluacion.csv" --entrada datasets/dataset_sin_hud/images \
+        --salida "${SAL}/salidas" --residuo ${ARGS:-} ${MAXIMG}
   else
     python scripts/denoising.py inferir --metodo "${MET}" \
         --lista "${L}/${FAM}_evaluacion.csv" --entrada datasets/dataset_sin_hud/images \

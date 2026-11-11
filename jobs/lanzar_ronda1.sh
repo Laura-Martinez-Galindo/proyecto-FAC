@@ -52,7 +52,9 @@ minutos_de() {  # estimacion (min) de entrenar 4000 pasos + inferir, para repart
   case "$1" in
     udvd) echo 75 ;; mmbsn) echo 70 ;; b2u|apbsn) echo 60 ;; nb2nb|structn2v|n2v) echo 30 ;;
     lgbpn|tbsn) echo 120 ;; puca|ubsn) echo 90 ;; noise2same|r2r) echo 45 ;; n2s) echo 35 ;; zsn2n) echo 15 ;;
-    bm3d) echo 40 ;; guiado|mediana_adaptativa) echo 5 ;; *) echo 15 ;;
+    bm3d) echo 40 ;; guiado|mediana_adaptativa) echo 5 ;;
+    cvfsid|self2self|cut2self) echo 90 ;; noise2score|gr2r) echo 45 ;; n2v2) echo 35 ;; p2n) echo 30 ;;
+    zsn2n_zs) echo 60 ;; noise2detail) echo 100 ;; dip) echo 140 ;; *) echo 15 ;;
   esac
 }
 
@@ -68,7 +70,7 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
     m=$(( $(minutos_de "$MET") * P / 4000 ))
     [[ " ${ARGS:-} " == *" --amp "* ]] || [[ "$MET" =~ ^(apbsn|mmbsn)$ ]] || m=$(( m * 3 / 2 ))  # sin AMP es mas lento
     m=$(( m + 5 ))
-    [ "${REC}" = "gpu" ] || m=15
+    [ "${REC}" = "gpu" ] || [ "${REC}" = "zs" ] || m=15
     k=1; for ((i=2; i<=CARRILES; i++)); do [ "${CARGA[$i]}" -lt "${CARGA[$k]}" ] && k=$i; done
     printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$EXP" "$FAM" "$MET" "$REC" "${ARGS:-}" "$m" >> "jobs/carriles/${RONDA}_carril${k}.tsv"
     CARGA[$k]=$(( CARGA[$k] + m )); N_GPU=$((N_GPU + 1))

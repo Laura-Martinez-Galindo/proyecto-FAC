@@ -50,6 +50,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fac_denoise.datos import Fuente, Parches, a_canales, guardar, leer, leer_lista  # noqa: E402
 from fac_denoise.metodos import METODOS, argumentos_todos  # noqa: E402
+import fac_denoise.metodos_tanda2  # noqa: E402,F401  (registra los metodos de la tanda 2)
 
 import cv2  # noqa: E402
 
@@ -157,7 +158,7 @@ def cmd_entrenar(a):
     n_par = sum(p.numel() for p in red.parameters())
     print(f"{a.metodo}: {n_par / 1e6:.2f} M parametros | parche {a.parche} | batch {a.batch} | lr {a.lr} | "
           f"{a.pasos} pasos | {disp}")
-    opt = torch.optim.Adam(red.parameters(), lr=a.lr)
+    opt = (torch.optim.AdamW if getattr(met, "optimizador", "adam") == "adamw" else torch.optim.Adam)(red.parameters(), lr=a.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.pasos, eta_min=a.lr * a.lr_final)
     usar_amp = a.amp and disp.type == "cuda"
     escalador = torch.amp.GradScaler("cuda", enabled=usar_amp)
@@ -211,7 +212,7 @@ def cmd_inferir(a):
         print(f"{ck['metodo']} paso {ck['paso']} ({a.checkpoint})")
     else:
         if not a.metodo or METODOS[a.metodo].entrenable:
-            sys.exit("Sin --checkpoint solo se pueden usar metodos clasicos (nlm, destripe_nlm).")
+            sys.exit("Sin --checkpoint solo se pueden usar metodos clasicos o zero-shot.")
         met, conf, canales, red = METODOS[a.metodo], a, a.canales, None
 
     filas = leer_lista(a.lista) if a.lista else [{"imagen": p.name} for p in sorted(Path(a.entrada).glob("*.png"))]
@@ -224,7 +225,8 @@ def cmd_inferir(a):
     fuentes = {}
     t0 = time.time()
     vecinos_faltantes = 0
-    if red is None and a.workers > 1:  # clasicos (BM3D, NLM...): una imagen por proceso
+    zs = getattr(met, "zero_shot", False)
+    if red is None and not zs and a.workers > 1:  # clasicos (BM3D, NLM...): una imagen por proceso
         from concurrent.futures import ProcessPoolExecutor
         tareas = [(Path(r["imagen"]).stem + ".png", str(Path(a.entrada)), str(sal), canales, met.nombre, conf,
                    a.residuo, a.sobrescribir) for r in filas]
@@ -242,7 +244,12 @@ def cmd_inferir(a):
         if centro is None:
             print(f"!! no se pudo leer {nombre}")
             continue
-        if red is None:
+        if zs:  # zero-shot: una red nueva entrenada sobre ESTA imagen
+            semillas(i)
+            x = torch.from_numpy(centro.transpose(2, 0, 1).astype(np.float32) / 255.0)[None].to(disp)
+            y = met.zero_shot_imagen(x, conf, disp)
+            out = np.rint(y[0].clamp(0, 1).detach().cpu().numpy().transpose(1, 2, 0) * 255.0).astype(np.uint8)
+        elif red is None:
             out = met.clasico(centro, conf)
         else:
             ims = [centro]
