@@ -15,6 +15,7 @@ export TABLA=config/denoising/ronda3.tsv
 export PATRON='*_r3*'
 export IQA="${IQA:-niqe brisque musiq clipiqa}"
 export MAX_EVALUACION="${MAX_EVALUACION:-300}"
+export COMBINAR="${COMBINAR:-1}"   # ensembles y stacks de los 3 mejores, al final de cada evaluacion
 if [ "${HUMO:-0}" = "1" ]; then
   export RONDA=ronda3_humo
 else

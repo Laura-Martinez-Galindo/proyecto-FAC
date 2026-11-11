@@ -8,7 +8,7 @@ source fac_env311/bin/activate
 pip install -q einops bm3d pyiqa scikit-image
 python - <<'PY'
 import pyiqa, torch
-for m in ["niqe", "brisque", "musiq", "clipiqa"]:
+for m in ["niqe", "brisque", "musiq", "clipiqa", "paq2piq"]:  # paq2piq: perdida de Self2Self+
     pyiqa.create_metric(m, device=torch.device("cpu"))
     print("pesos listos:", m)
 from torchvision.models.optical_flow import Raft_Small_Weights, raft_small

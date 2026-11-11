@@ -79,7 +79,7 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS MIN; do
   MI=$(echo " ${ARGS:-} " | grep -o -- "--max-imagenes [0-9]*" | awk '{print $2}')
   [ -n "$MI" ] && [ "$MI" -lt "$NLISTA" ] && NLISTA=$MI
   [ "${HUMO:-0}" = "1" ] && ARGS="${ARGS//cache\/denoising\//cache\/denoising_humo\/}"
-  BASE=$(echo " ${ARGS:-} " | grep -oE -- "--(p2n|f2r)-base [^ ]*" | awk "{print \$2}")
+  BASE=$(echo " ${ARGS:-} " | grep -oE -- "--(p2n|f2r|tap)-base [^ ]*" | awk "{print \$2}")
   if [ -n "$BASE" ] && [ ! -f "$BASE" ]; then
     echo "== ${FAM}/${EXP}: falta su modelo base (${BASE}); queda para el proximo envio"
     resumen+=("$(printf '%-38s %-10s' "${FAM}/${EXP}" "PENDIENTE")"); continue

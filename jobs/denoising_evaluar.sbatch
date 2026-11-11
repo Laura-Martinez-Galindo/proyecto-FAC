@@ -17,7 +17,8 @@
 # entrada (scripts/color_original.py), para separar "limpia bien" de "cambia el color".
 # Variables: RONDA (ronda1), FAMILIAS (por defecto las de config/denoising/familias.json),
 #   IQA (p.ej. "niqe brisque musiq clipiqa"), COLOR_ORIGINAL (1; 0 = no crear las variantes _ycolor),
-#   PATRON (que experimentos evaluar, p.ej. "*_r3*"; por defecto todos)
+#   PATRON (que experimentos evaluar, p.ej. "*_r3*"; por defecto todos),
+#   COMBINAR (1 = armar ensembles y stacks de los 3 mejores de cada regimen y volver a evaluar)
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
@@ -26,11 +27,13 @@ source fac_env311/bin/activate
 RONDA="${RONDA:-ronda1}"
 FAMILIAS="${FAMILIAS:-$(python -c "import json;print(' '.join(json.load(open('config/denoising/familias.json'))))")}"
 
+evaluar_todo() {
 for F in ${FAMILIAS}; do
   if [ "${COLOR_ORIGINAL:-1}" = "1" ]; then
     for d in cache/denoising/${F}/${PATRON:-*}/salidas; do
       E="$(basename "$(dirname "$d")")"
       [[ "$E" == *_ycolor ]] && continue
+      [[ "$E" == ens3* || "$E" == stack* ]] && continue  # combinaciones: se arman de salidas ya corregidas o no
       python scripts/color_original.py --entrada datasets/dataset_sin_hud/images --base "$d" \
           --salida "cache/denoising/${F}/${E}_ycolor/salidas"
     done
@@ -50,6 +53,18 @@ for F in ${FAMILIAS}; do
       ${IQA:+--iqa ${IQA}} \
       $( [ -d datasets/vecinos_eval/images ] && echo --vecinos-entrada datasets/vecinos_eval/images )
 done
+}
+
+evaluar_todo
+# Ensembles y stacks de los 3 mejores de cada regimen (scripts/combinaciones.py) y nueva evaluacion
+if [ "${COMBINAR:-0}" = "1" ]; then
+  for F in ${FAMILIAS}; do
+    R="resultados/denoising/${RONDA}/${F}/ranking.csv"
+    [ -f "$R" ] && python scripts/combinaciones.py --familia "$F" --ranking "$R" || echo "!! ${F}: sin combinaciones"
+  done
+  echo "=================== EVALUACION CON LAS COMBINACIONES ==================="
+  evaluar_todo
+fi
 
 # un solo archivo para traer al PC
 tar -cf "resultados/denoising/${RONDA}.tar" -C resultados/denoising "${RONDA}" listas

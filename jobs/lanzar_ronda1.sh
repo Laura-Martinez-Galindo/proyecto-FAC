@@ -55,7 +55,10 @@ minutos_de() {  # estimacion (min) de entrenar 4000 pasos + inferir, para repart
     bm3d) echo 40 ;; guiado|mediana_adaptativa) echo 5 ;;
     cvfsid|self2self|cut2self) echo 90 ;; noise2score|gr2r) echo 45 ;; n2v2) echo 35 ;; p2n) echo 30 ;;
     zsn2n_zs) echo 60 ;; noise2detail) echo 100 ;; dip) echo 140 ;;
-    f2f) echo 50 ;; mf2f) echo 60 ;; saved) echo 40 ;; f2r) echo 180 ;; *) echo 15 ;;
+    f2f) echo 50 ;; mf2f) echo 60 ;; saved) echo 40 ;; f2r) echo 180 ;;
+    sass) echo 150 ;; nsp) echo 120 ;; tmbsn) echo 60 ;; swinia) echo 150 ;; selfformer) echo 120 ;;
+    tap) echo 120 ;; pcst) echo 150 ;; stbn|rdrf) echo 120 ;;
+    mash) echo 120 ;; zskan) echo 60 ;; filter2noise) echo 90 ;; s2splus) echo 150 ;; *) echo 15 ;;
   esac
 }
 
@@ -203,7 +206,7 @@ for ((i=1; i<=CARRILES; i++)); do
   f="jobs/carriles/${RONDA}_carril${i}.tsv"
   [ -s "$f" ] || continue
   ID=$(sbatch --parsable ${DEP} "${GPU_RES[@]}" -J "dn_gpu${i}" \
-       --export=ALL,CARRIL="$f",PASOS="${PASOS:-4000}",EVALUAR_AL_FINAL="${TODO_EN_GPU:-1}",RONDA="${RONDA}",PREPARAR_LISTAS="${PREP_CARRIL}",FAMILIAS="${SOLO:-$FAMILIAS}",PATRON="${PATRON:-*}",IQA="${IQA:-}",HUMO="${HUMO:-0}",MAX_EVALUACION="${MAX_EVALUACION:-120}" \
+       --export=ALL,CARRIL="$f",PASOS="${PASOS:-4000}",EVALUAR_AL_FINAL="${TODO_EN_GPU:-1}",RONDA="${RONDA}",PREPARAR_LISTAS="${PREP_CARRIL}",FAMILIAS="${SOLO:-$FAMILIAS}",PATRON="${PATRON:-*}",IQA="${IQA:-}",HUMO="${HUMO:-0}",MAX_EVALUACION="${MAX_EVALUACION:-120}",COMBINAR="${COMBINAR:-0}" \
        -o "jobs/logs/dn_gpu${i}_%j.out" -e "jobs/logs/dn_gpu${i}_%j.err" jobs/denoising_carril.sbatch) \
        || { echo "!! no se pudo enviar el carril GPU $i"; exit 1; }
   echo "carril GPU $i               -> job $ID (gpu)"

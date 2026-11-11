@@ -57,8 +57,12 @@ def flujo(a, b, suavizar=1.5):
         b = _gauss(b, suavizar, k)
     if a.shape[1] == 1:
         a, b = a.repeat(1, 3, 1, 1), b.repeat(1, 3, 1, 1)
+    h, w = a.shape[-2:]  # RAFT pide lados multiplos de 8 y de al menos 128
+    ph, pw = max(128, -(-h // 8) * 8) - h, max(128, -(-w // 8) * 8) - w
+    if ph or pw:
+        a, b = F.pad(a, (0, pw, 0, ph), mode="replicate"), F.pad(b, (0, pw, 0, ph), mode="replicate")
     with torch.autocast(a.device.type, enabled=False):
-        return _raft(a.device)(a.float() * 2 - 1, b.float() * 2 - 1, num_flow_updates=12)[-1]
+        return _raft(a.device)(a.float() * 2 - 1, b.float() * 2 - 1, num_flow_updates=12)[-1][..., :h, :w]
 
 
 def _gauss(x, s, k):

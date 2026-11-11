@@ -162,12 +162,19 @@ Tanda 1 (config/denoising/ronda3.tsv, 60 experimentos = 20 metodos x 3 regimenes
 Tanda 2 (scripts/fac_denoise/metodos_tanda2.py, 30 experimentos mas): CVF-SID, Noise2Score, N2V2,
 Self2Self y Cut2Self (red de referencia), GR2R, Positive2Negative* (ajusta la UNet de NB2NB del mismo
 regimen) y, zero-shot (una red por imagen, evaluados en 100 o 30 imagenes): ZS-N2N, Noise2Detail y DIP.
-Pendientes de la tanda 2: SASS, MASH*, TM-BSN, NSP, ZS-KAN*, SelfFormer*, SwinIA*, Filter2Noise,
-Self2Self+; PN2V no aplica (modelo de ruido por histograma para imagenes en gris de microscopia).
+PN2V no aplica (modelo de ruido por histograma para imagenes en gris de microscopia).
+
+Tanda 4 (scripts/fac_denoise/metodos_tanda4.py, 39 experimentos): codigo oficial de SASS, NSP, TM-BSN,
+Filter2Noise y Self2Self+ (zero-shot), TAP y PCST (temporales); reimplementados del articulo: MASH,
+ZS-KAN, SwinIA, SelfFormer, STBN y RDRF (verificado que la salida no depende del propio pixel).
+
+Ensembles y stacks (scripts/combinaciones.py, COMBINAR=1): al final de cada evaluacion se toman los 3
+primeros del ranking de cada regimen y se arman promedio, mediana, 1.o + filtro guiado, 1.o + mediana
+adaptativa y mediana adaptativa + 1.o; se vuelven a evaluar junto con todo lo demas.
 Tanda 3 (scripts/fac_denoise/metodos_tanda3.py, temporales; UDVD estaba en la tanda 1): Frame2Frame,
 Multi-Frame2Frame, SAVeD (red oficial, sobre el brillo) y F2R (redes oficiales de las 2 etapas; limpieza
 gruesa con nb2nb_r3 del mismo regimen y pseudo-ruido tomado del residuo real). Flujo optico: RAFT-small.
-Pendientes: TAP, STBN, PCST, RDRF*.
+TAP, STBN*, PCST y RDRF* en la tanda 4.
 (* = sin codigo publico: reimplementacion desde el articulo.)
 
 Metricas temporales (scripts/preparar_vecinos.py + evaluar_denoising.py --vecinos-entrada), en las 20

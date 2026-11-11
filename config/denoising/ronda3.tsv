@@ -112,3 +112,43 @@ saved_r3	HDEO_DDE	saved	gpu
 f2r_r3	HDEO_DDE_HAZE	f2r	gpu	--f2r-base cache/denoising/HDEO_DDE_HAZE/nb2nb_r3/modelo.pt
 f2r_r3	HDEO_HAZE	f2r	gpu	--f2r-base cache/denoising/HDEO_HAZE/nb2nb_r3/modelo.pt
 f2r_r3	HDEO_DDE	f2r	gpu	--f2r-base cache/denoising/HDEO_DDE/nb2nb_r3/modelo.pt
+# ---- Tanda 4 (lo que faltaba) ----
+sass_r3	HDEO_DDE_HAZE	sass	gpu	
+sass_r3	HDEO_HAZE	sass	gpu	
+sass_r3	HDEO_DDE	sass	gpu	
+nsp_r3	HDEO_DDE_HAZE	nsp	gpu	
+nsp_r3	HDEO_HAZE	nsp	gpu	
+nsp_r3	HDEO_DDE	nsp	gpu	
+tmbsn_r3	HDEO_DDE_HAZE	tmbsn	gpu	
+tmbsn_r3	HDEO_HAZE	tmbsn	gpu	
+tmbsn_r3	HDEO_DDE	tmbsn	gpu	
+swinia_r3	HDEO_DDE_HAZE	swinia	gpu	
+swinia_r3	HDEO_HAZE	swinia	gpu	
+swinia_r3	HDEO_DDE	swinia	gpu	
+selfformer_r3	HDEO_DDE_HAZE	selfformer	gpu	
+selfformer_r3	HDEO_HAZE	selfformer	gpu	
+selfformer_r3	HDEO_DDE	selfformer	gpu	
+pcst_r3	HDEO_DDE_HAZE	pcst	gpu	
+pcst_r3	HDEO_HAZE	pcst	gpu	
+pcst_r3	HDEO_DDE	pcst	gpu	
+stbn_r3	HDEO_DDE_HAZE	stbn	gpu	
+stbn_r3	HDEO_HAZE	stbn	gpu	
+stbn_r3	HDEO_DDE	stbn	gpu	
+rdrf_r3	HDEO_DDE_HAZE	rdrf	gpu	
+rdrf_r3	HDEO_HAZE	rdrf	gpu	
+rdrf_r3	HDEO_DDE	rdrf	gpu	
+tap_r3	HDEO_DDE_HAZE	tap	gpu	--tap-base cache/denoising/HDEO_DDE_HAZE/nb2nb_r3/modelo.pt
+tap_r3	HDEO_HAZE	tap	gpu	--tap-base cache/denoising/HDEO_HAZE/nb2nb_r3/modelo.pt
+tap_r3	HDEO_DDE	tap	gpu	--tap-base cache/denoising/HDEO_DDE/nb2nb_r3/modelo.pt
+mash_r3	HDEO_DDE_HAZE	mash	zs	--max-imagenes 50
+mash_r3	HDEO_HAZE	mash	zs	--max-imagenes 50
+mash_r3	HDEO_DDE	mash	zs	--max-imagenes 50
+zskan_r3	HDEO_DDE_HAZE	zskan	zs	--max-imagenes 100
+zskan_r3	HDEO_HAZE	zskan	zs	--max-imagenes 100
+zskan_r3	HDEO_DDE	zskan	zs	--max-imagenes 100
+filter2noise_r3	HDEO_DDE_HAZE	filter2noise	zs	--max-imagenes 100
+filter2noise_r3	HDEO_HAZE	filter2noise	zs	--max-imagenes 100
+filter2noise_r3	HDEO_DDE	filter2noise	zs	--max-imagenes 100
+s2splus_r3	HDEO_DDE_HAZE	s2splus	zs	--max-imagenes 30
+s2splus_r3	HDEO_HAZE	s2splus	zs	--max-imagenes 30
+s2splus_r3	HDEO_DDE	s2splus	zs	--max-imagenes 30
