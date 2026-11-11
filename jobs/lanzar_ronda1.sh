@@ -54,7 +54,8 @@ minutos_de() {  # estimacion (min) de entrenar 4000 pasos + inferir, para repart
     lgbpn|tbsn) echo 120 ;; puca|ubsn) echo 90 ;; noise2same|r2r) echo 45 ;; n2s) echo 35 ;; zsn2n) echo 15 ;;
     bm3d) echo 40 ;; guiado|mediana_adaptativa) echo 5 ;;
     cvfsid|self2self|cut2self) echo 90 ;; noise2score|gr2r) echo 45 ;; n2v2) echo 35 ;; p2n) echo 30 ;;
-    zsn2n_zs) echo 60 ;; noise2detail) echo 100 ;; dip) echo 140 ;; *) echo 15 ;;
+    zsn2n_zs) echo 60 ;; noise2detail) echo 100 ;; dip) echo 140 ;;
+    f2f) echo 50 ;; mf2f) echo 60 ;; saved) echo 40 ;; f2r) echo 180 ;; *) echo 15 ;;
   esac
 }
 

@@ -69,7 +69,7 @@ import numpy as np
 
 METRICAS = ["sigma_ruido", "grano", "ruido_quitado", "retencion_bordes", "corr_residuo_bordes", "autocorr_residuo",
             "croma_ratio", "delta_e_suave", "bloques_8px", "corr_residuo_temporal"]
-MAYOR_ES_MEJOR = {"retencion_bordes": True, "musiq": True, "clipiqa": True}
+MAYOR_ES_MEJOR = {"retencion_bordes": True, "musiq": True, "clipiqa": True, "upsnr": True}
 # metricas sin referencia (pyiqa): menor = mejor salvo las de MAYOR_ES_MEJOR
 IQA_MENOR = ("niqe", "brisque")
 EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -206,6 +206,53 @@ def metricas_par(entrada: np.ndarray, salida: np.ndarray, frac_bordes: float, si
 
 
 # ---------------------------------------------------------------------------
+# Metricas temporales (con frames vecinos, ver scripts/preparar_vecinos.py)
+def _alinear_dis(ref, nb):
+    """Flujo DIS de ref (BGR) a nb sobre versiones suavizadas; devuelve funcion de alineado y validos."""
+    global _DIS
+    g0 = cv2.GaussianBlur(cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY), (0, 0), 1.0)
+    g1 = cv2.GaussianBlur(cv2.cvtColor(nb, cv2.COLOR_BGR2GRAY), (0, 0), 1.0)
+    if _DIS is None:
+        _DIS = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
+    fl = _DIS.calc(g0, g1, None)
+    h, w = g0.shape
+    mx, my = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    mx, my = mx + fl[..., 0], my + fl[..., 1]
+    validos = (mx >= 0) & (mx <= w - 1) & (my >= 0) & (my <= h - 1)
+    al = lambda im: cv2.remap(gris(im), mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    dif = np.abs(cv2.GaussianBlur(al(nb), (0, 0), 2) - cv2.GaussianBlur(gris(ref), (0, 0), 2))
+    validos &= dif < 12  # oclusiones / fallas del flujo
+    validos[:16], validos[-16:], validos[:, :16], validos[:, -16:] = False, False, False, False
+    return al, validos
+
+
+def _tarea_temporal(t):
+    exp, nombre, p_in, p_out, dir_vec_in, dir_vec_out, video, frame = t
+    a, b = cv2.imread(p_in, cv2.IMREAD_COLOR), cv2.imread(p_out, cv2.IMREAD_COLOR)
+    leer = lambda d, k: cv2.imread(str(Path(d) / f"{video}_{k:06d}.png"), cv2.IMREAD_COLOR)
+    ym1, yp1, yp2 = leer(dir_vec_in, frame - 1), leer(dir_vec_in, frame + 1), leer(dir_vec_in, frame + 2)
+    om1, op1 = leer(dir_vec_out, frame - 1), leer(dir_vec_out, frame + 1)
+    r = {"experimento": exp, "imagen": nombre, "warping_error": float("nan"), "upsnr": float("nan")}
+    if a is None or b is None or ym1 is None or yp1 is None:
+        return r
+    go = gris(b)
+    al_m1, v_m1 = _alinear_dis(a, ym1)
+    al_p1, v_p1 = _alinear_dis(a, yp1)
+    if om1 is not None and op1 is not None:
+        e1 = np.abs(go - al_m1(om1))[v_m1]
+        e2 = np.abs(go - al_p1(op1))[v_p1]
+        if e1.size > 1000 and e2.size > 1000:
+            r["warping_error"] = float(0.5 * (e1.mean() + e2.mean()))
+    if yp2 is not None:
+        al_p2, v_p2 = _alinear_dis(a, yp2)
+        v = v_m1 & v_p1 & v_p2
+        if v.sum() > 1000:
+            umse = float(np.mean((go - al_p1(yp1))[v] ** 2) - 0.5 * np.mean((al_m1(ym1) - al_p2(yp2))[v] ** 2))
+            r["upsnr"] = float(10 * math.log10(255.0 ** 2 / umse)) if umse > 0 else float("nan")
+    return r
+
+
+# ---------------------------------------------------------------------------
 # Trabajo en paralelo
 # ---------------------------------------------------------------------------
 
@@ -296,7 +343,8 @@ def ranking(resumen, min_ret, max_corr, min_croma=0.85, max_croma=1.15, max_de=3
     out = []
     iqa_pres = [m for m in ("niqe", "brisque", "musiq", "clipiqa") if any(f"{m}_media" in r for r in resumen)]
     cols = [f"{m}_cambio_pct" for m in iqa_pres] + [f"{m}_p50" for m in iqa_pres] + ["grano_p50", "sigma_ruido_p50", "ruido_quitado_p50", "retencion_bordes_p25", "corr_residuo_bordes_p50",
-            "croma_ratio_p50", "delta_e_suave_p50", "bloques_8px_p50", "corr_residuo_temporal_p50"]
+            "croma_ratio_p50", "delta_e_suave_p50", "bloques_8px_p50", "corr_residuo_temporal_p50",
+            "warping_error_p50", "upsnr_p50"]
     for reg in sorted({r["regimen"] for r in resumen}):
         filas = [r for r in resumen if r["regimen"] == reg and r["experimento"] != "sin_denoising"]
         base = next((r for r in resumen if r["regimen"] == reg and r["experimento"] == "sin_denoising"), {})
@@ -416,6 +464,8 @@ def main():
     ap.add_argument("--semilla", type=int, default=0)
     ap.add_argument("--vecino-temporal", type=int, default=2,
                     help="d del frame vecino (k+d) para corr_residuo_temporal; 0 = no calcularla")
+    ap.add_argument("--vecinos-entrada", default="", help="carpeta con los frames vecinos ruidosos (preparar_vecinos.py); "
+                    "la salida del metodo en los vecinos se busca en <carpeta del experimento>/../vecinos")
     ap.add_argument("--min-croma", type=float, default=0.85, help="Filtro: croma_ratio p50 minimo")
     ap.add_argument("--max-croma", type=float, default=1.15, help="Filtro: croma_ratio p50 maximo")
     ap.add_argument("--max-delta-e", type=float, default=3.0, help="Filtro: delta_e_suave p50 maximo")
@@ -477,6 +527,27 @@ def main():
                 print(f"  {i}/{len(tareas)}", flush=True)
 
     metricas = list(METRICAS)
+    if a.vecinos_entrada and vf:
+        cand = [n for n in nombres if Path(n).stem in vf
+                and (Path(a.vecinos_entrada) / f"{vf[Path(n).stem][0]}_{vf[Path(n).stem][1] - 1:06d}.png").exists()]
+        tt = []
+        for exp, carpeta in exps:
+            d_out = Path(a.vecinos_entrada) if exp == "sin_denoising" else Path(carpeta).parent / "vecinos"
+            if not d_out.is_dir():
+                continue
+            for n in cand:
+                p_out = Path(carpeta) / n
+                if p_out.exists():
+                    v, k = vf[Path(n).stem]
+                    tt.append((exp, n, str(ent / n), str(p_out), a.vecinos_entrada, str(d_out), v, k))
+        if tt:
+            print(f"metricas temporales: {len(tt)} pares (imagen, experimento) con vecinos")
+            idx = {(r["experimento"], r["imagen"]): r for r in filas}
+            with ProcessPoolExecutor(a.workers) as ex:
+                for rt in ex.map(_tarea_temporal, tt, chunksize=2):
+                    if (rt["experimento"], rt["imagen"]) in idx:
+                        idx[(rt["experimento"], rt["imagen"])].update(warping_error=rt["warping_error"], upsnr=rt["upsnr"])
+            metricas += ["warping_error", "upsnr"]
     if a.iqa:
         for exp, carpeta in exps:
             sel = [r for r in filas if r["experimento"] == exp]

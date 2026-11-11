@@ -99,3 +99,16 @@ noise2detail_r3	HDEO_DDE	noise2detail	zs	--max-imagenes 100
 dip_r3	HDEO_DDE_HAZE	dip	zs	--max-imagenes 30
 dip_r3	HDEO_HAZE	dip	zs	--max-imagenes 30
 dip_r3	HDEO_DDE	dip	zs	--max-imagenes 30
+# ---- Tanda 3 (temporales; UDVD ya esta arriba) ----
+f2f_r3	HDEO_DDE_HAZE	f2f	gpu	
+f2f_r3	HDEO_HAZE	f2f	gpu	
+f2f_r3	HDEO_DDE	f2f	gpu	
+mf2f_r3	HDEO_DDE_HAZE	mf2f	gpu	
+mf2f_r3	HDEO_HAZE	mf2f	gpu	
+mf2f_r3	HDEO_DDE	mf2f	gpu	
+saved_r3	HDEO_DDE_HAZE	saved	gpu	
+saved_r3	HDEO_HAZE	saved	gpu	
+saved_r3	HDEO_DDE	saved	gpu	
+f2r_r3	HDEO_DDE_HAZE	f2r	gpu	--f2r-base cache/denoising/HDEO_DDE_HAZE/nb2nb_r3/modelo.pt
+f2r_r3	HDEO_HAZE	f2r	gpu	--f2r-base cache/denoising/HDEO_HAZE/nb2nb_r3/modelo.pt
+f2r_r3	HDEO_DDE	f2r	gpu	--f2r-base cache/denoising/HDEO_DDE/nb2nb_r3/modelo.pt

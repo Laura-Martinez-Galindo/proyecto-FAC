@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fac_denoise.datos import Fuente, Parches, a_canales, guardar, leer, leer_lista  # noqa: E402
 from fac_denoise.metodos import METODOS, argumentos_todos  # noqa: E402
 import fac_denoise.metodos_tanda2  # noqa: E402,F401  (registra los metodos de la tanda 2)
+import fac_denoise.metodos_tanda3  # noqa: E402,F401  (temporales)
 
 import cv2  # noqa: E402
 

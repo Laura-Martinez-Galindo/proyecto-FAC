@@ -47,7 +47,8 @@ for F in ${FAMILIAS}; do
       --regimenes datasets/dataset_original/regimenes_dataset.csv \
       --mascaras datasets/dataset_sin_hud/mascaras_hud \
       "${EXPS[@]}" --salida "resultados/denoising/${RONDA}/${F}" \
-      ${IQA:+--iqa ${IQA}}
+      ${IQA:+--iqa ${IQA}} \
+      $( [ -d datasets/vecinos_eval/images ] && echo --vecinos-entrada datasets/vecinos_eval/images )
 done
 
 # un solo archivo para traer al PC

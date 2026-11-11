@@ -164,9 +164,16 @@ Self2Self y Cut2Self (red de referencia), GR2R, Positive2Negative* (ajusta la UN
 regimen) y, zero-shot (una red por imagen, evaluados en 100 o 30 imagenes): ZS-N2N, Noise2Detail y DIP.
 Pendientes de la tanda 2: SASS, MASH*, TM-BSN, NSP, ZS-KAN*, SelfFormer*, SwinIA*, Filter2Noise,
 Self2Self+; PN2V no aplica (modelo de ruido por histograma para imagenes en gris de microscopia).
-Tanda 3 (pendiente, temporales): MF2F, TAP, STBN, PCST, RDRF*, SAVeD, F2R (con guia autosupervisada).
-(* = sin codigo publico: reimplementacion desde el articulo.) Metricas temporales (warping error,
-uPSNR) en la tanda 3. Los ensembles y stacks se arman sobre los ganadores.
+Tanda 3 (scripts/fac_denoise/metodos_tanda3.py, temporales; UDVD estaba en la tanda 1): Frame2Frame,
+Multi-Frame2Frame, SAVeD (red oficial, sobre el brillo) y F2R (redes oficiales de las 2 etapas; limpieza
+gruesa con nb2nb_r3 del mismo regimen y pseudo-ruido tomado del residuo real). Flujo optico: RAFT-small.
+Pendientes: TAP, STBN, PCST, RDRF*.
+(* = sin codigo publico: reimplementacion desde el articulo.)
+
+Metricas temporales (scripts/preparar_vecinos.py + evaluar_denoising.py --vecinos-entrada), en las 20
+primeras imagenes de evaluacion de cada regimen: warping_error (parpadeo entre frames, menor = mejor) y
+upsnr (estimacion insesgada del PSNR sin imagen limpia con 3 vecinos ruidosos alineados, mayor = mejor).
+Los ensembles y stacks se arman sobre los ganadores.
 
 Uso en Hypatia:
 ```

@@ -11,6 +11,9 @@ import pyiqa, torch
 for m in ["niqe", "brisque", "musiq", "clipiqa"]:
     pyiqa.create_metric(m, device=torch.device("cpu"))
     print("pesos listos:", m)
+from torchvision.models.optical_flow import Raft_Small_Weights, raft_small
+raft_small(weights=Raft_Small_Weights.DEFAULT)  # flujo optico de los metodos temporales
+print("pesos listos: raft_small")
 import einops, bm3d
 print("einops", einops.__version__, "| bm3d ok")
 PY

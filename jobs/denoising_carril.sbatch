@@ -53,6 +53,16 @@ if [ "${PREPARAR_LISTAS:-0}" = "1" ]; then
   [ -f "$MARCA" ] || { echo "!! no se pudieron armar las listas"; exit 1; }
 fi
 
+# frames vecinos para las metricas temporales (warping error, uPSNR): una sola vez, con candado
+exec 8>"jobs/carriles/.vecinos.lock"
+flock 8
+FAM1=$(python -c "import json;print(list(json.load(open('config/denoising/familias.json')))[0])")
+if [ ! -f "${L}/${FAM1}_vecinos.csv" ]; then
+  echo "== Preparando frames vecinos (scripts/preparar_vecinos.py)"
+  python scripts/preparar_vecinos.py --n "${N_VECINOS:-20}" || echo "!! no se pudieron preparar los vecinos (sin metricas temporales)"
+fi
+flock -u 8
+
 resumen=()
 BASE_CACHE="cache/denoising"; PASOS_RONDA="${PASOS:-4000}"; MAXIMG=""
 if [ "${HUMO:-0}" = "1" ]; then BASE_CACHE="cache/denoising_humo"; PASOS_RONDA=30; MAXIMG="--max-imagenes 2"; fi
@@ -69,7 +79,7 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS MIN; do
   MI=$(echo " ${ARGS:-} " | grep -o -- "--max-imagenes [0-9]*" | awk '{print $2}')
   [ -n "$MI" ] && [ "$MI" -lt "$NLISTA" ] && NLISTA=$MI
   [ "${HUMO:-0}" = "1" ] && ARGS="${ARGS//cache\/denoising\//cache\/denoising_humo\/}"
-  BASE=$(echo " ${ARGS:-} " | grep -o -- "--p2n-base [^ ]*" | awk '{print $2}')
+  BASE=$(echo " ${ARGS:-} " | grep -oE -- "--(p2n|f2r)-base [^ ]*" | awk "{print \$2}")
   if [ -n "$BASE" ] && [ ! -f "$BASE" ]; then
     echo "== ${FAM}/${EXP}: falta su modelo base (${BASE}); queda para el proximo envio"
     resumen+=("$(printf '%-38s %-10s' "${FAM}/${EXP}" "PENDIENTE")"); continue
@@ -106,6 +116,18 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS MIN; do
         --salida "${SAL}/salidas" --residuo ${ARGS:-} ${MAXIMG}
   fi
   codigo=$?
+  VL="${L}/${FAM}_vecinos.csv"
+  if [ $codigo -eq 0 ] && [ -f "$VL" ] && [ "${REC}" != "zs" ]; then  # salida tambien en t-1 y t+1
+    if [ "${REC}" = "gpu" ]; then
+      python scripts/denoising.py inferir --checkpoint "${SAL}/modelo.pt" --lista "$VL" \
+          --entrada datasets/vecinos_eval/images --salida "${SAL}/vecinos" ${INF_ARGS} ${MAXIMG} \
+        || echo "!! ${EXP}: fallo la inferencia en los vecinos (sin metricas temporales)"
+    else
+      python scripts/denoising.py inferir --metodo "${MET}" --lista "$VL" \
+          --entrada datasets/vecinos_eval/images --salida "${SAL}/vecinos" ${ARGS:-} ${MAXIMG} \
+        || echo "!! ${EXP}: fallo la inferencia en los vecinos (sin metricas temporales)"
+    fi
+  fi
   min=$(( ($(date +%s) - t0) / 60 ))
   estado=$([ $codigo -eq 0 ] && echo OK || echo "FALLO($codigo)")
   echo "${FAM}/${EXP}: ${estado} en ${min} min"
