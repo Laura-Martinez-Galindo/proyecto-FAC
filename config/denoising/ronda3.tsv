@@ -1,0 +1,69 @@
+# RONDA 3 de denoising (fase 1, seleccion): TODOS los metodos integrados x los 3 regimenes dominantes.
+# Condiciones iguales para todos: mismas listas (1.500 frames de entrenamiento por regimen; evaluacion
+# con hasta 300 imagenes del dataset por regimen), mismos 4.000 pasos, sin AMP, e hiperparametros
+# (parche, batch, lr, perdida) del articulo / repositorio oficial de cada metodo.
+# Ranking por % de reduccion de NIQE y BRISQUE frente al original (meta de la propuesta: >= 8 %),
+# con MUSIQ, CLIP-IQA, grano, color, bloques y ruido-vs-textura de apoyo.
+# El orden es de mas a menos prometedor, para que lo primero que termine sea lo mas util.
+# Tanda 1 (esta tabla). Tandas 2 y 3 (resto de espaciales y temporales) se agregan al final.
+# experimento	familia	metodo	recurso	argumentos
+apbsn_r3	HDEO_DDE_HAZE	apbsn	gpu	
+apbsn_r3	HDEO_HAZE	apbsn	gpu	
+apbsn_r3	HDEO_DDE	apbsn	gpu	
+mmbsn_r3	HDEO_DDE_HAZE	mmbsn	gpu	
+mmbsn_r3	HDEO_HAZE	mmbsn	gpu	
+mmbsn_r3	HDEO_DDE	mmbsn	gpu	
+tbsn_r3	HDEO_DDE_HAZE	tbsn	gpu	
+tbsn_r3	HDEO_HAZE	tbsn	gpu	
+tbsn_r3	HDEO_DDE	tbsn	gpu	
+puca_r3	HDEO_DDE_HAZE	puca	gpu	
+puca_r3	HDEO_HAZE	puca	gpu	
+puca_r3	HDEO_DDE	puca	gpu	
+lgbpn_r3	HDEO_DDE_HAZE	lgbpn	gpu	
+lgbpn_r3	HDEO_HAZE	lgbpn	gpu	
+lgbpn_r3	HDEO_DDE	lgbpn	gpu	
+ubsn_r3	HDEO_DDE_HAZE	ubsn	gpu	
+ubsn_r3	HDEO_HAZE	ubsn	gpu	
+ubsn_r3	HDEO_DDE	ubsn	gpu	
+nb2nb_r3	HDEO_DDE_HAZE	nb2nb	gpu	
+nb2nb_r3	HDEO_HAZE	nb2nb	gpu	
+nb2nb_r3	HDEO_DDE	nb2nb	gpu	
+b2u_r3	HDEO_DDE_HAZE	b2u	gpu	
+b2u_r3	HDEO_HAZE	b2u	gpu	
+b2u_r3	HDEO_DDE	b2u	gpu	
+zsn2n_r3	HDEO_DDE_HAZE	zsn2n	gpu	
+zsn2n_r3	HDEO_HAZE	zsn2n	gpu	
+zsn2n_r3	HDEO_DDE	zsn2n	gpu	
+n2s_r3	HDEO_DDE_HAZE	n2s	gpu	
+n2s_r3	HDEO_HAZE	n2s	gpu	
+n2s_r3	HDEO_DDE	n2s	gpu	
+noise2same_r3	HDEO_DDE_HAZE	noise2same	gpu	
+noise2same_r3	HDEO_HAZE	noise2same	gpu	
+noise2same_r3	HDEO_DDE	noise2same	gpu	
+r2r_r3	HDEO_DDE_HAZE	r2r	gpu	
+r2r_r3	HDEO_HAZE	r2r	gpu	
+r2r_r3	HDEO_DDE	r2r	gpu	
+n2v_r3	HDEO_DDE_HAZE	n2v	gpu	
+n2v_r3	HDEO_HAZE	n2v	gpu	
+n2v_r3	HDEO_DDE	n2v	gpu	
+structn2v_r3	HDEO_DDE_HAZE	structn2v	gpu	
+structn2v_r3	HDEO_HAZE	structn2v	gpu	
+structn2v_r3	HDEO_DDE	structn2v	gpu	
+udvd_r3	HDEO_DDE_HAZE	udvd	gpu	--batch 8
+udvd_r3	HDEO_HAZE	udvd	gpu	--batch 8
+udvd_r3	HDEO_DDE	udvd	gpu	--batch 8
+bm3d_r3	HDEO_DDE_HAZE	bm3d	cpu	
+bm3d_r3	HDEO_HAZE	bm3d	cpu	
+bm3d_r3	HDEO_DDE	bm3d	cpu	
+guiado_r3	HDEO_DDE_HAZE	guiado	cpu	
+guiado_r3	HDEO_HAZE	guiado	cpu	
+guiado_r3	HDEO_DDE	guiado	cpu	
+mediana_adaptativa_r3	HDEO_DDE_HAZE	mediana_adaptativa	cpu	
+mediana_adaptativa_r3	HDEO_HAZE	mediana_adaptativa	cpu	
+mediana_adaptativa_r3	HDEO_DDE	mediana_adaptativa	cpu	
+nlm_r3	HDEO_DDE_HAZE	nlm	cpu	--nlm-h 8 --nlm-h-color 8
+nlm_r3	HDEO_HAZE	nlm	cpu	--nlm-h 4 --nlm-h-color 4
+nlm_r3	HDEO_DDE	nlm	cpu	--nlm-h 3 --nlm-h-color 3
+mediana_nlm_r3	HDEO_DDE_HAZE	mediana_nlm	cpu	--nlm-h 8 --nlm-h-color 8 --mediana-umbral 30
+mediana_nlm_r3	HDEO_HAZE	mediana_nlm	cpu	--nlm-h 4 --nlm-h-color 4 --mediana-umbral 30
+mediana_nlm_r3	HDEO_DDE	mediana_nlm	cpu	--nlm-h 3 --nlm-h-color 3 --mediana-umbral 30

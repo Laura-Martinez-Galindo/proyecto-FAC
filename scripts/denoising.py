@@ -7,7 +7,7 @@ Experimentos de denoising con UNA sola interfaz para todos los metodos.
   inferir    limpia una lista de imagenes del dataset (o todas) con un checkpoint
              (o con un metodo clasico, que no se entrena)
 
-Metodos: udvd (video, 5 frames), n2v, structn2v, nb2nb, b2u, apbsn, nlm, destripe_nlm.
+Metodos: `python scripts/denoising.py metodos` los lista todos (ronda 3: ~25 espaciales y temporales).
 Ver scripts/fac_denoise/metodos.py para referencias y que hace cada uno.
 
 Datos
@@ -179,7 +179,7 @@ def cmd_entrenar(a):
         escalador.step(opt)
         escalador.update()
         sched.step()
-        v = loss.item() / (met.escala ** (1 if a.metodo == "apbsn" else 2))
+        v = loss.item() / met.escala
         media = v if media is None else 0.98 * media + 0.02 * v
         if paso % a.log_cada == 0 or paso == a.pasos:
             log.write(f"{paso},{media:.6g},{sched.get_last_lr()[0]:.2e},{time.time() - t0:.0f}\n")
@@ -224,6 +224,15 @@ def cmd_inferir(a):
     fuentes = {}
     t0 = time.time()
     vecinos_faltantes = 0
+    if red is None and a.workers > 1:  # clasicos (BM3D, NLM...): una imagen por proceso
+        from concurrent.futures import ProcessPoolExecutor
+        tareas = [(Path(r["imagen"]).stem + ".png", str(Path(a.entrada)), str(sal), canales, met.nombre, conf,
+                   a.residuo, a.sobrescribir) for r in filas]
+        with ProcessPoolExecutor(a.workers) as ex:
+            for i, _ in enumerate(ex.map(_clasico_uno, tareas, chunksize=1), 1):
+                if i % 20 == 0 or i == len(tareas):
+                    print(f"  {i}/{len(tareas)}  ({time.time() - t0:.0f} s)", flush=True)
+        filas = []
     for i, r in enumerate(filas, 1):
         nombre = Path(r["imagen"]).stem + ".png"
         dst = sal / nombre
@@ -254,7 +263,7 @@ def cmd_inferir(a):
                 with torch.no_grad(), torch.autocast(disp.type, enabled=a.amp and disp.type == "cuda"):
                     return met.aplicar(red, t, conf)
 
-            y = mosaicos(fn, x, a.tile, a.overlap, max(met.multiplo, 32 if met.nombre != "apbsn" else 2))
+            y = mosaicos(fn, x, a.tile, a.overlap, getattr(met, "multiplo_mosaico", max(met.multiplo, 32 if met.nombre not in ("apbsn", "mmbsn") else 2)))
             y = (y[0] / met.escala).clamp(0, 1).cpu().numpy().transpose(1, 2, 0) * 255.0
             out = np.rint(y).astype(np.uint8)
         guardar(dst, out)
@@ -270,6 +279,22 @@ def cmd_inferir(a):
             "config": {k: v for k, v in vars(conf).items()}}
     (sal / "inferencia.json").write_text(json.dumps(info, indent=2, default=str), encoding="utf-8")
     print(f"Listo: {sal}")
+
+
+def _clasico_uno(t):
+    nombre, entrada, sal, canales, metodo, conf, residuo, sobrescribir = t
+    dst = Path(sal) / nombre
+    if dst.exists() and not sobrescribir:
+        return
+    centro = leer(str(Path(entrada) / nombre), canales)
+    if centro is None:
+        print(f"!! no se pudo leer {nombre}")
+        return
+    out = METODOS[metodo].clasico(centro, conf)
+    guardar(dst, out)
+    if residuo:
+        res = np.clip((centro.astype(np.float32) - out.astype(np.float32)) * 4 + 128, 0, 255).astype(np.uint8)
+        guardar(Path(sal) / "residuo" / nombre, res)
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +341,8 @@ def main():
     i.add_argument("--sobrescribir", action="store_true")
     i.add_argument("--amp", action="store_true")
     i.add_argument("--cpu", action="store_true")
+    i.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)),
+                   help="procesos para los metodos clasicos (una imagen por proceso)")
     argumentos_todos(i)
 
     a = ap.parse_args()

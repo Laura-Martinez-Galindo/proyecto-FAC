@@ -15,6 +15,11 @@
 # y asi las 2 GPUs trabajan todo el tiempo. Si un experimento falla, se anota y se sigue con el resto.
 # Lo arma y lo manda jobs/lanzar_ronda1.sh (la particion, --gres, CPUs y RAM van por linea de comando).
 # Variables: CARRIL (archivo), PASOS (4000)
+#   Se puede RELANZAR las veces que haga falta: un experimento que ya tiene todas sus salidas se
+#   salta, y uno que no alcanza a terminar en el tiempo que le queda al job (columna 6 del carril:
+#   minutos estimados) se deja para el siguiente envio. Asi la ronda avanza por tandas.
+#   HUMO=1: prueba de humo (30 pasos, 2 imagenes, en cache/denoising_humo) para ver en minutos que
+#   todos los metodos cargan, entrenan e infieren antes de gastar horas de GPU.
 #   EVALUAR_AL_FINAL=1: al terminar, si ya no queda otro carril de esta ronda corriendo (dn_gpu*),
 #   este mismo job corre la evaluacion de todas las familias (jobs/denoising_evaluar.sbatch). Asi la
 #   evaluacion tambien queda en la GPU y no hace falta otro job.
@@ -49,9 +54,27 @@ if [ "${PREPARAR_LISTAS:-0}" = "1" ]; then
 fi
 
 resumen=()
-while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
+BASE_CACHE="cache/denoising"; PASOS_RONDA="${PASOS:-4000}"; MAXIMG=""
+if [ "${HUMO:-0}" = "1" ]; then BASE_CACHE="cache/denoising_humo"; PASOS_RONDA=30; MAXIMG="--max-imagenes 2"; fi
+minutos_restantes() {
+  local fin; fin=$(squeue -h -j "${SLURM_JOB_ID:-0}" -o %e 2>/dev/null)
+  [[ -z "$fin" || "$fin" == "N/A" ]] && { echo 99999; return; }
+  echo $(( ( $(date -d "$fin" +%s) - $(date +%s) ) / 60 ))
+}
+while IFS=$'\t' read -r EXP FAM MET REC ARGS MIN; do
   [[ -z "${EXP}" || "${EXP}" == \#* ]] && continue
-  SAL="cache/denoising/${FAM}/${EXP}"
+  SAL="${BASE_CACHE}/${FAM}/${EXP}"
+  NLISTA=$(( $(wc -l < "${L}/${FAM}_evaluacion.csv") - 1 ))
+  [ -n "${MAXIMG}" ] && NLISTA=2
+  NHECHAS=$(ls "${SAL}/salidas"/*.png 2>/dev/null | wc -l)
+  if [ -f "${SAL}/salidas/inferencia.json" ] && [ "${NHECHAS}" -ge "${NLISTA}" ]; then
+    echo "== ${FAM}/${EXP}: ya hecho (${NHECHAS} imagenes), se salta"
+    resumen+=("$(printf '%-38s %-10s' "${FAM}/${EXP}" "YA_HECHO")"); continue
+  fi
+  if [ -n "${MIN:-}" ] && [ "${HUMO:-0}" != "1" ] && [ "$(minutos_restantes)" -lt $(( MIN * 12 / 10 )) ]; then
+    echo "== ${FAM}/${EXP}: no alcanza (~${MIN} min, quedan $(minutos_restantes)); queda para el proximo envio"
+    resumen+=("$(printf '%-38s %-10s' "${FAM}/${EXP}" "PENDIENTE")"); continue
+  fi
   mkdir -p "${SAL}"
   t0=$(date +%s)
   echo
@@ -61,14 +84,14 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
     [[ " ${ARGS:-} " == *" --amp "* ]] && INF_ARGS="--amp"
     python scripts/denoising.py entrenar --metodo "${MET}" --familia "${FAM}" \
         --lista "${L}/${FAM}_entrenamiento.csv" --salida "${SAL}" \
-        --pasos "${PASOS:-4000}" --instantaneas 2000 ${ARGS:-} \
+        --pasos "${PASOS_RONDA}" --instantaneas 2000 ${ARGS:-} \
       && python scripts/denoising.py inferir --checkpoint "${SAL}/modelo.pt" \
         --lista "${L}/${FAM}_evaluacion.csv" --entrada datasets/dataset_sin_hud/images \
-        --salida "${SAL}/salidas" --residuo ${INF_ARGS}
+        --salida "${SAL}/salidas" --residuo ${INF_ARGS} ${MAXIMG}
   else
     python scripts/denoising.py inferir --metodo "${MET}" \
         --lista "${L}/${FAM}_evaluacion.csv" --entrada datasets/dataset_sin_hud/images \
-        --salida "${SAL}/salidas" --residuo ${ARGS:-}
+        --salida "${SAL}/salidas" --residuo ${ARGS:-} ${MAXIMG}
   fi
   codigo=$?
   min=$(( ($(date +%s) - t0) / 60 ))
@@ -81,6 +104,10 @@ echo
 echo "=================== RESUMEN DEL CARRIL ==================="
 printf '%s\n' "${resumen[@]}"
 
+if [ "${HUMO:-0}" = "1" ]; then
+  echo; echo "Prueba de humo terminada: los FALLO de arriba son metodos que hay que corregir antes de la ronda."
+  exit 0
+fi
 if [ "${EVALUAR_AL_FINAL:-0}" = "1" ]; then
   otros=$(squeue -u "$USER" -h -o "%i %j" 2>/dev/null | awk -v yo="${SLURM_JOB_ID:-x}" '$2 ~ /^dn_gpu/ && $1 != yo' | wc -l)
   if [ "$otros" -eq 0 ]; then

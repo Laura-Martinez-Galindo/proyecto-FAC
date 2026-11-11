@@ -24,6 +24,8 @@ Referencias (perdidas reimplementadas siguiendo el codigo oficial):
 """
 from __future__ import annotations
 
+import math
+import random
 import sys
 from pathlib import Path
 
@@ -394,8 +396,323 @@ class MedianaNLM(NLM):
         return super().clasico(im2, a)
 
 
+
+# ===========================================================================
+# RONDA 3: metodos nuevos
+# ===========================================================================
+# ---- Redes de punto ciego de terceros (codigo OFICIAL en fac_denoise/terceros) -----------
+# Todas siguen el esquema de AP-BSN de su repo: entrenan con L1 contra la entrada ruidosa
+# (self_L1), escala 0-255, e infieren con su propio denoise() (PD asimetrico + R3).
+class TerceroAPBSN(Metodo):
+    escala = 255.0
+    clave = modulo = clase = ""
+    kwargs: dict = {}
+
+    def crear(self, a, c):
+        from fac_denoise.terceros import cargar
+        mod = cargar(self.clave, self.modulo)
+        return mod.get_model_class(self.clase)(**self.kwargs)
+
+    def perdida(self, red, x, progreso, a):
+        return F.l1_loss(red(x).float(), x)
+
+    def aplicar(self, red, x, a):
+        return red.denoise(x)
+
+
+class PUCAm(TerceroAPBSN):
+    """PUCA (Jang et al., NeurIPS 2023). conf/PUCA_SIDD.yaml oficial: pd [4,2,1], dilation 2,
+    width 128, enc [3,4], middle 4, dec [4,3], R3 (8, 0.16), parche 256, batch 2, lr 1e-4."""
+    nombre, multiplo, parche_defecto, batch_defecto = "puca", 64, 256, 2
+    multiplo_mosaico = 64
+    clave, modulo, clase = "puca", "src.model", "apbsn"
+    kwargs = dict(bsn="PUCA", pd=[4, 2, 1], dilation=2, width=128, enc_blk_nums=[3, 4], middle_blk_nums=4,
+                  dec_blk_nums=[4, 3], R3=True, R3_T=8, R3_p=0.16)
+
+
+class LGBPNm(TerceroAPBSN):
+    """LG-BPN (Wang et al., CVPR 2023). conf/APBSN_SIDD/BSN_SIDD.yaml oficial: BSN My_BSN, base 128,
+    9 modulos, PD interno (entrena 4, infiere 3, refina 2), R3 (8, 0.16), parche 120, batch 8, lr 1e-4."""
+    nombre, multiplo, parche_defecto, batch_defecto = "lgbpn", 24, 120, 8
+    multiplo_mosaico = 48
+    clave, modulo, clase = "lgbpn", "src.model", "bsn"
+    kwargs = dict(pd_a=5, pd_b=2, pd_pad=2, R3=True, R3_T=8, R3_p=0.16, SIDD=True, bsn="My_BSN",
+                  in_ch=3, bsn_base_ch=128, bsn_num_module=9)
+
+
+class UBSNm(TerceroAPBSN):
+    """U-BSN (Yu et al., WACV 2025). conf/UBSN_SIDD_val.yaml oficial: pd [4,2,1] (al entrenar sortea
+    3-5), dilation 2, R3 (8, 0.16), parche 240, batch 4, lr 1e-4."""
+    nombre, multiplo, parche_defecto, batch_defecto = "ubsn", 120, 240, 4
+    multiplo_mosaico = 120
+    clave, modulo, clase = "ubsn", "src.model", "apbsn"
+    kwargs = dict(bsn="UBSN", pd=[4, 2, 1], dilation=2, width=128, enc_blk_nums=[3, 4], middle_blk_nums=4,
+                  dec_blk_nums=[4, 3], R3=True, R3_T=8, R3_p=0.16)
+
+
+def _pd_tbsn(x, f, train=False):
+    """pixel_shuffle_down_sampling de model/apbsn.py (TBSN oficial), sin cambios."""
+    b, c, w, h = x.shape
+    u = F.pixel_unshuffle(x, f).view(b, c, f * f, w // f, h // f).permute(0, 2, 1, 3, 4)
+    if train:
+        return u[:, 0].reshape(b, c, w // f, h // f)
+    return u.reshape(b * f * f, c, w // f, h // f)
+
+
+def _pu_tbsn(x, f):
+    b, c, h, w = x.shape
+    t = x.view(b // (f * f), f * f, c, h, w).permute(0, 2, 1, 3, 4).reshape(b // (f * f), c * f * f, h, w)
+    return F.pixel_shuffle(t, f)
+
+
+class _TBSNEnvoltura(torch.nn.Module):
+    """model/apbsn.py::APBSNModel de TBSN (train_step / validation_step) como modulo."""
+
+    def __init__(self, bsn, pd_a=5, pd_b=2, R3=True, R3_T=8, R3_p=0.16):
+        super().__init__()
+        self.bsn, self.pd_a, self.pd_b, self.R3, self.R3_T, self.R3_p = bsn, pd_a, pd_b, R3, R3_T, R3_p
+
+    def denoise(self, x):
+        b, c, h, w = x.shape
+        out = _pu_tbsn(self.bsn(_pd_tbsn(x, self.pd_b)), self.pd_b)
+        if not self.R3:
+            return out[:, :, :h, :w]
+        den = torch.empty(*x.shape, self.R3_T, device=x.device)
+        for t in range(self.R3_T):
+            m = torch.rand_like(x) < self.R3_p
+            tmp = out.clone().detach()
+            tmp[m] = x[m]
+            den[..., t] = self.bsn(tmp)
+        return den.mean(-1)
+
+
+class TBSNm(Metodo):
+    """TBSN (Li et al., AAAI 2025). option/tbsn_sidd.json oficial: pd_a 5 (entrena con la primera
+    sub-imagen PD), pd_b 2, R3 (8, 0.16), parche 640, batch 4, lr 3e-4, L1."""
+    nombre, multiplo, escala, parche_defecto, batch_defecto = "tbsn", 40, 255.0, 640, 4
+    multiplo_mosaico = 64
+    lr_defecto = 3e-4
+
+    def crear(self, a, c):
+        from fac_denoise.terceros import cargar
+        net = cargar("tbsn", "network")
+        return _TBSNEnvoltura(net.TBSN(in_ch=c, out_ch=c))
+
+    def perdida(self, red, x, progreso, a):
+        inp = _pd_tbsn(x, red.pd_a, train=True)
+        return F.l1_loss(red.bsn(inp).float(), inp)
+
+    def aplicar(self, red, x, a):
+        return red.denoise(x)
+
+
+# ---- Reimplementados desde el articulo / codigo oficial pequeno, sobre la UNet comun ------
+class Noise2Self(Metodo):
+    """Noise2Self (Batson & Royer, ICML 2019). Masker oficial (czbiohub/noise2self, mode
+    'interpolate', width 4): en cada paso se oculta una rejilla de 1 de cada 16 pixeles, se rellena
+    con el promedio de sus vecinos y la perdida (MSE) se mide solo ahi. Inferencia: imagen completa."""
+    nombre, multiplo = "n2s", 32
+
+    def crear(self, a, c):
+        return _unet(a, c)
+
+    def perdida(self, red, x, progreso, a):
+        n, c, h, w = x.shape
+        fase = random.randrange(16)
+        m = torch.zeros(1, 1, h, w, device=x.device)
+        m[..., (fase // 4)::4, (fase % 4)::4] = 1
+        entrada = _interpolar(x, m)
+        out = red(entrada).float()
+        return torch.sum(((out - x) * m) ** 2) / (m.sum() * n * c)
+
+    def aplicar(self, red, x, a):
+        return red(x)
+
+
+class Noise2Same(N2V):
+    """Noise2Same (Xie et al., NeurIPS 2020): L = MSE(f(x), x) + lambda * sqrt(MSE_J(f(x), f(x_J)))
+    donde x_J tiene ocultos los pixeles J (reemplazo por vecino, como N2V). lambda = 2 (articulo)."""
+    nombre = "noise2same"
+
+    @staticmethod
+    def argumentos(p):
+        p.add_argument("--n2same-lambda", type=float, default=2.0)
+
+    def perdida(self, red, x, progreso, a):
+        b, c, h, w = x.shape
+        n = max(1, int(round(a.n2v_perc / 100.0 * h * w)))
+        dev = x.device
+        ys, xs = torch.randint(0, h, (b, n), device=dev), torch.randint(0, w, (b, n), device=dev)
+        dy = torch.randint(-2, 3, (b, n), device=dev)
+        dx = torch.randint(-2, 3, (b, n), device=dev)
+        dx = torch.where((dy == 0) & (dx == 0), torch.ones_like(dx), dx)
+        bi = torch.arange(b, device=dev)[:, None].expand(b, n)
+        mascarada = x.clone()
+        mascarada[bi, :, ys, xs] = x[bi, :, (ys + dy).clamp(0, h - 1), (xs + dx).clamp(0, w - 1)]
+        f_x = red(x).float()
+        f_m = red(mascarada).float()
+        rec = F.mse_loss(f_x, x)
+        inv = torch.mean((f_x[bi, :, ys, xs] - f_m[bi, :, ys, xs]) ** 2)
+        return rec + a.n2same_lambda * torch.sqrt(inv + 1e-12)
+
+    def aplicar(self, red, x, a):
+        return red(x)
+
+
+def _sigma_lote(x):
+    """Immerkaer (1996) por imagen del lote, en la escala de x. Devuelve B x 1 x 1 x 1."""
+    g = x.mean(1, keepdim=True)
+    k = torch.tensor([[1, -2, 1], [-2, 4, -2], [1, -2, 1]], dtype=x.dtype, device=x.device)[None, None]
+    r = F.conv2d(g, k)
+    return (math.sqrt(math.pi / 2) * r.abs().mean(dim=(1, 2, 3)) / 6.0).view(-1, 1, 1, 1)
+
+
+class R2R(Metodo):
+    """Recorrupted-to-Recorrupted (Pang et al., CVPR 2021). y^ = y + alpha*sigma*z,
+    y~ = y - sigma*z/alpha, perdida MSE(f(y^), y~); inferencia = promedio de f(y + alpha*sigma*z) en T
+    muestras. alpha 0.5 (oficial). El articulo asume sigma conocida: aqui se estima por parche con
+    Immerkaer (adaptacion necesaria porque no la conocemos)."""
+    nombre, multiplo = "r2r", 32
+
+    @staticmethod
+    def argumentos(p):
+        p.add_argument("--r2r-alpha", type=float, default=0.5)
+        p.add_argument("--r2r-t", type=int, default=8, help="muestras promediadas al inferir (oficial 50)")
+
+    def crear(self, a, c):
+        return _unet(a, c)
+
+    def perdida(self, red, x, progreso, a):
+        s = _sigma_lote(x)
+        z = torch.randn_like(x)
+        return F.mse_loss(red(x + a.r2r_alpha * s * z).float(), x - s * z / a.r2r_alpha)
+
+    def aplicar(self, red, x, a):
+        s = _sigma_lote(x)
+        return torch.stack([red(x + a.r2r_alpha * s * torch.randn_like(x)).float() for _ in range(a.r2r_t)]).mean(0)
+
+
+class _ZSNet(torch.nn.Module):
+    """Red del articulo ZS-N2N: 2 conv 3x3 (48 canales) + conv 1x1, LeakyReLU 0.2; predice el ruido."""
+
+    def __init__(self, c, ch=48):
+        super().__init__()
+        self.c1 = torch.nn.Conv2d(c, ch, 3, padding=1)
+        self.c2 = torch.nn.Conv2d(ch, ch, 3, padding=1)
+        self.c3 = torch.nn.Conv2d(ch, c, 1)
+
+    def forward(self, x):
+        x = F.leaky_relu(self.c1(x), 0.2)
+        x = F.leaky_relu(self.c2(x), 0.2)
+        return self.c3(x)
+
+
+def _par_zs(img):
+    c = img.shape[1]
+    f1 = torch.tensor([[[[0, 0.5], [0.5, 0]]]], dtype=img.dtype, device=img.device).repeat(c, 1, 1, 1)
+    f2 = torch.tensor([[[[0.5, 0], [0, 0.5]]]], dtype=img.dtype, device=img.device).repeat(c, 1, 1, 1)
+    return F.conv2d(img, f1, stride=2, groups=c), F.conv2d(img, f2, stride=2, groups=c)
+
+
+class ZSN2N(Metodo):
+    """Zero-Shot Noise2Noise (Mansour & Heckel, CVPR 2023), perdida residual + consistencia del
+    articulo (pair_downsampler). Aqui se entrena con los mismos parches que los demas metodos
+    (condiciones iguales con los demas metodos)."""
+    nombre, multiplo, lr_defecto, parche_defecto = "zsn2n", 2, 1e-3, 128
+
+    def crear(self, a, c):
+        return _ZSNet(c)
+
+    def perdida(self, red, y, progreso, a):
+        n1, n2 = _par_zs(y)
+        p1, p2 = n1 - red(n1), n2 - red(n2)
+        res = 0.5 * (F.mse_loss(n1, p2) + F.mse_loss(n2, p1))
+        d1, d2 = _par_zs(y - red(y))
+        cons = 0.5 * (F.mse_loss(p1, d1) + F.mse_loss(p2, d2))
+        return res + cons
+
+    def aplicar(self, red, x, a):
+        return x - red(x)
+
+
+# ---- Clasicos (sin entrenamiento) ------------------------------------------------------
+def _sigma_img(im):
+    g = cv2.cvtColor(im, cv2.COLOR_RGB2GRAY).astype(np.float32) if im.shape[2] == 3 else im[..., 0].astype(np.float32)
+    k = np.array([[1, -2, 1], [-2, 4, -2], [1, -2, 1]], np.float32)
+    return float(math.sqrt(math.pi / 2) * np.abs(cv2.filter2D(g, -1, k))[1:-1, 1:-1].mean() / 6.0)
+
+
+class BM3Dm(NLM):
+    """BM3D (Dabov et al. 2007; Makinen et al. 2020), paquete oficial `bm3d` de Tampere. Color con
+    bm3d_rgb (YCbCr). sigma = Immerkaer de la imagen x --bm3d-factor."""
+    nombre = "bm3d"
+
+    @staticmethod
+    def argumentos(p):
+        p.add_argument("--bm3d-factor", type=float, default=1.0)
+
+    def clasico(self, im, a):
+        import bm3d
+        s = max(_sigma_img(im) * a.bm3d_factor, 0.5) / 255.0
+        f = im.astype(np.float32) / 255.0
+        out = bm3d.bm3d_rgb(f, s) if im.shape[2] == 3 else bm3d.bm3d(f[..., 0], s)[..., None]
+        return np.clip(np.rint(out * 255), 0, 255).astype(np.uint8)
+
+
+def _guiado(I, p, r, eps):
+    """Filtro guiado (He et al., ECCV 2010 / TPAMI 2013), version con box filter."""
+    caja = lambda t: cv2.boxFilter(t, -1, (2 * r + 1, 2 * r + 1))
+    mI, mp = caja(I), caja(p)
+    a = (caja(I * p) - mI * mp) / (caja(I * I) - mI * mI + eps)
+    b = mp - a * mI
+    return caja(a) * I + caja(b)
+
+
+class GuiadoM(NLM):
+    """Filtro guiado auto-guiado por canal (recomendacion de la investigacion para DDE): r = 4,
+    eps = (k * sigma)^2 con sigma de Immerkaer (k = --guiado-k)."""
+    nombre = "guiado"
+
+    @staticmethod
+    def argumentos(p):
+        p.add_argument("--guiado-r", type=int, default=4)
+        p.add_argument("--guiado-k", type=float, default=2.0)
+
+    def clasico(self, im, a):
+        eps = (a.guiado_k * max(_sigma_img(im), 0.5) / 255.0) ** 2
+        f = im.astype(np.float32) / 255.0
+        out = np.stack([_guiado(f[..., i], f[..., i], a.guiado_r, eps) for i in range(f.shape[2])], 2)
+        return np.clip(np.rint(out * 255), 0, 255).astype(np.uint8)
+
+
+class MedianaAdaptativa(NLM):
+    """Filtro de mediana adaptativo (Hwang & Haddad, 1995): por pixel crece la ventana 3 -> 7
+    hasta que la mediana no es un extremo; solo reemplaza el pixel si el mismo es un extremo
+    (impulso). Deja intactos los pixeles que no son sal y pimienta."""
+    nombre = "mediana_adaptativa"
+
+    def clasico(self, im, a):
+        out = im.copy()
+        for ch in range(im.shape[2]):
+            x = np.ascontiguousarray(im[..., ch])
+            decidido = np.zeros(x.shape, bool)
+            res = x.copy()
+            for k in (3, 5, 7):
+                med = cv2.medianBlur(x, k)
+                ker = np.ones((k, k), np.uint8)
+                mn, mx = cv2.erode(x, ker), cv2.dilate(x, ker)
+                nivel_a = (med > mn) & (med < mx) & ~decidido
+                impulso = (x <= mn) | (x >= mx)
+                res = np.where(nivel_a & impulso, med, res)
+                decidido |= nivel_a
+            out[..., ch] = res
+        return out
+
 METODOS = {m.nombre: m for m in [UDVD(), N2V(), StructN2V(), NB2NB(), B2U(), APBSNm(), MMBSNm(), NLM(), DestripeNLM(),
-                                 MedianaNLM()]}
+                                 MedianaNLM(),
+                                 # ronda 3
+                                 PUCAm(), LGBPNm(), UBSNm(), TBSNm(), Noise2Self(), Noise2Same(), R2R(), ZSN2N(),
+                                 BM3Dm(), GuiadoM(), MedianaAdaptativa()]}
 
 
 def argumentos_todos(p):

@@ -16,6 +16,7 @@
 # TODO_EN_GPU=0 vuelve al esquema con carril CPU + job de evaluacion aparte.
 #
 # Uso (desde la raiz del repo):
+#   bash jobs/lanzar_ronda3.sh            # ronda 3 (todos los metodos x 3 regimenes); ver ese archivo
 #   RONDA=ronda2 TABLA=config/denoising/ronda2.tsv SOLO=HDEO_DDE_HAZE PREPARAR=0 bash jobs/lanzar_ronda1.sh
 #   PRUEBA=1 bash jobs/lanzar_ronda1.sh            # solo el test
 #   bash jobs/lanzar_ronda1.sh                     # test y envio
@@ -37,7 +38,7 @@ FAMILIAS=$(python3 -c "import json;print(' '.join(json.load(open('config/denoisi
 inicio() { sbatch --test-only "$@" 2>&1 | grep -o "to start at [0-9T:-]*" | awk '{print $4}'; }
 motivo() { sbatch --test-only "$@" 2>&1 | grep -i "error" | tail -1 | cut -c1-110; }
 a_epoch() { date -d "$1" +%s 2>/dev/null || echo 0; }
-hhmm() { printf "%02d:%02d:00" $(( $1 / 60 )) $(( $1 % 60 )); }
+hhmm() { printf "%d-%02d:%02d:00" $(( $1 / 1440 )) $(( $1 % 1440 / 60 )) $(( $1 % 60 )); }
 elegir_particion() {
   local mejor="" mejor_t="9999"
   for p in ${PARTICIONES_CPU}; do
@@ -49,7 +50,9 @@ elegir_particion() {
 }
 minutos_de() {  # estimacion (min) de entrenar 4000 pasos + inferir, para repartir carriles
   case "$1" in
-    udvd) echo 75 ;; mmbsn) echo 70 ;; b2u|apbsn) echo 60 ;; nb2nb|structn2v|n2v) echo 30 ;; *) echo 15 ;;
+    udvd) echo 75 ;; mmbsn) echo 70 ;; b2u|apbsn) echo 60 ;; nb2nb|structn2v|n2v) echo 30 ;;
+    lgbpn|tbsn) echo 120 ;; puca|ubsn) echo 90 ;; noise2same|r2r) echo 45 ;; n2s) echo 35 ;; zsn2n) echo 15 ;;
+    bm3d) echo 40 ;; guiado|mediana_adaptativa) echo 5 ;; *) echo 15 ;;
   esac
 }
 
@@ -67,7 +70,7 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
     m=$(( m + 5 ))
     [ "${REC}" = "gpu" ] || m=15
     k=1; for ((i=2; i<=CARRILES; i++)); do [ "${CARGA[$i]}" -lt "${CARGA[$k]}" ] && k=$i; done
-    printf "%s\t%s\t%s\t%s\t%s\n" "$EXP" "$FAM" "$MET" "$REC" "${ARGS:-}" >> "jobs/carriles/${RONDA}_carril${k}.tsv"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$EXP" "$FAM" "$MET" "$REC" "${ARGS:-}" "$m" >> "jobs/carriles/${RONDA}_carril${k}.tsv"
     CARGA[$k]=$(( CARGA[$k] + m )); N_GPU=$((N_GPU + 1))
   else
     printf "%s\t%s\t%s\t%s\t%s\n" "$EXP" "$FAM" "$MET" "$REC" "${ARGS:-}" >> "jobs/carriles/${RONDA}_cpu.tsv"
@@ -75,7 +78,16 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
   fi
 done < "${TABLA}"
 MAXC=0; for ((i=1; i<=CARRILES; i++)); do [ "${CARGA[$i]}" -gt "$MAXC" ] && MAXC=${CARGA[$i]}; done
-T_CARRIL="${TIEMPO_CARRIL:-$(hhmm $(( MAXC * 14 / 10 > 120 ? MAXC * 14 / 10 : 120 )))}"
+# tiempo maximo que deja la particion gpu (si la ronda no cabe, los carriles hacen lo que alcancen y
+# se vuelve a lanzar el MISMO comando: lo ya hecho se salta)
+MAXT=$(sinfo -h -p gpu -o %l 2>/dev/null | head -1)
+a_min() { local t=$1 d=0 h=0 m=0; [[ "$t" == *-* ]] && { d=${t%%-*}; t=${t#*-}; }
+  IFS=: read -r h m _ <<<"$t"; echo $(( 10#$d * 1440 + 10#${h:-0} * 60 + 10#${m:-0} )); }
+TOPE=99999; [[ -n "$MAXT" && "$MAXT" != "infinite" ]] && TOPE=$(a_min "$MAXT")
+EST=$(( MAXC * 14 / 10 > 120 ? MAXC * 14 / 10 : 120 )); [ "$EST" -gt "$TOPE" ] && EST=$TOPE
+[ "${HUMO:-0}" = "1" ] && EST=120
+T_CARRIL="${TIEMPO_CARRIL:-$(hhmm $EST)}"
+echo "Tiempo maximo de la particion gpu: ${MAXT:-?}"
 T_CPU="$(hhmm $(( N_CPU * 20 + 30 )))"
 
 echo "=================== REPARTO ==================="
@@ -188,7 +200,7 @@ for ((i=1; i<=CARRILES; i++)); do
   f="jobs/carriles/${RONDA}_carril${i}.tsv"
   [ -s "$f" ] || continue
   ID=$(sbatch --parsable ${DEP} "${GPU_RES[@]}" -J "dn_gpu${i}" \
-       --export=ALL,CARRIL="$f",PASOS="${PASOS:-4000}",EVALUAR_AL_FINAL="${TODO_EN_GPU:-1}",RONDA="${RONDA}",PREPARAR_LISTAS="${PREP_CARRIL}",FAMILIAS="${SOLO:-$FAMILIAS}" \
+       --export=ALL,CARRIL="$f",PASOS="${PASOS:-4000}",EVALUAR_AL_FINAL="${TODO_EN_GPU:-1}",RONDA="${RONDA}",PREPARAR_LISTAS="${PREP_CARRIL}",FAMILIAS="${SOLO:-$FAMILIAS}",PATRON="${PATRON:-*}",IQA="${IQA:-}",HUMO="${HUMO:-0}",MAX_EVALUACION="${MAX_EVALUACION:-120}" \
        -o "jobs/logs/dn_gpu${i}_%j.out" -e "jobs/logs/dn_gpu${i}_%j.err" jobs/denoising_carril.sbatch) \
        || { echo "!! no se pudo enviar el carril GPU $i"; exit 1; }
   echo "carril GPU $i               -> job $ID (gpu)"

@@ -139,3 +139,35 @@ Cambios:
 ```
 RONDA=ronda2 TABLA=config/denoising/ronda2.tsv SOLO=HDEO_DDE_HAZE PREPARAR=0 bash jobs/lanzar_ronda1.sh
 ```
+
+## Ronda 3 (11 nov 2026): todos los metodos, por regimen (fase 1 = seleccion)
+
+Objetivo (propuesta, objetivo especifico 2): metodos autosupervisados espaciales y temporales, con
+reduccion >= 8 % de NIQE y BRISQUE frente al video sin procesar. Se elige el mejor modelo DE CADA
+regimen por separado (HDEO_DDE_HAZE, HDEO_HAZE, HDEO_DDE).
+
+* **Fase 1 (esta ronda):** cada metodo se entrena con la misma muestra de frames de su regimen
+  (1.500), los mismos 4.000 pasos, sin AMP, con los hiperparametros de su articulo, y se evalua en
+  hasta 300 imagenes del dataset por regimen. Ranking por % de reduccion de NIQE y BRISQUE.
+* **Fase 2:** los 3 mejores de cada regimen (y sus combinaciones: ensembles y stacks) se
+  reentrenan con TODOS los frames del regimen (incluidos los del dataset; en autosupervisado es
+  valido) y limpian el dataset completo -> dataset_denoised.
+
+Tanda 1 (config/denoising/ronda3.tsv, 60 experimentos = 20 metodos x 3 regimenes):
+* Codigo oficial (scripts/fac_denoise/terceros): PUCA, LG-BPN, U-BSN, TBSN; ya integrados: AP-BSN,
+  MM-BSN, UDVD, NB2NB, B2U.
+* Reimplementados del articulo: Noise2Self, Noise2Same, R2R (sigma estimada), ZS-N2N, N2V, StructN2V.
+* Clasicos: BM3D (paquete oficial), filtro guiado, mediana adaptativa, NLM, mediana+NLM.
+
+Tanda 2 (pendiente): CVF-SID, Noise2Score, Self2Self+, DIP, SASS, MASH, TM-BSN, NSP, Cut2Self,
+Filter2Noise, Noise2Info, Positive2Negative*, ZS-KAN*, SelfFormer*, SwinIA*, GR2R, PN2V, N2V2.
+Tanda 3 (pendiente, temporales): MF2F, TAP, STBN, PCST, RDRF*, SAVeD, F2R (con guia autosupervisada).
+(* = sin codigo publico: reimplementacion desde el articulo.) Metricas temporales (warping error,
+uPSNR) en la tanda 3. Los ensembles y stacks se arman sobre los ganadores.
+
+Uso en Hypatia:
+```
+bash jobs/preparar_entorno_ronda3.sh      # una vez, en login: instala einops/bm3d/pyiqa y baja pesos
+HUMO=1 bash jobs/lanzar_ronda3.sh         # prueba de humo (~1-2 h): que todo carga y corre
+bash jobs/lanzar_ronda3.sh                # la ronda; si no alcanza el tiempo, relanzar igual
+```

@@ -69,7 +69,9 @@ import numpy as np
 
 METRICAS = ["sigma_ruido", "grano", "ruido_quitado", "retencion_bordes", "corr_residuo_bordes", "autocorr_residuo",
             "croma_ratio", "delta_e_suave", "bloques_8px", "corr_residuo_temporal"]
-MAYOR_ES_MEJOR = {"retencion_bordes": True}
+MAYOR_ES_MEJOR = {"retencion_bordes": True, "musiq": True, "clipiqa": True}
+# metricas sin referencia (pyiqa): menor = mejor salvo las de MAYOR_ES_MEJOR
+IQA_MENOR = ("niqe", "brisque")
 EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 
@@ -288,12 +290,22 @@ def resumir(filas, metricas):
 def ranking(resumen, min_ret, max_corr, min_croma=0.85, max_croma=1.15, max_de=3.0):
     """Descarta solo por COLOR (croma_ratio, delta_e_suave): eso si se puede medir sin referencia.
     retencion_bordes y corr_residuo_bordes quedan como AVISOS: en la ronda 1 confundian grano y
-    bloques con bordes y descartaban hasta lo que se veia bien. Orden: grano p50."""
+    bloques con bordes y descartaban hasta lo que se veia bien.
+    Orden: si hay NIQE y BRISQUE (objetivo de la propuesta), por el % de reduccion promedio de
+    las dos frente a sin_denoising (mayor = mejor); si no, por grano p50."""
     out = []
-    cols = ["grano_p50", "sigma_ruido_p50", "ruido_quitado_p50", "retencion_bordes_p25", "corr_residuo_bordes_p50",
+    iqa_pres = [m for m in ("niqe", "brisque", "musiq", "clipiqa") if any(f"{m}_media" in r for r in resumen)]
+    cols = [f"{m}_cambio_pct" for m in iqa_pres] + [f"{m}_p50" for m in iqa_pres] + ["grano_p50", "sigma_ruido_p50", "ruido_quitado_p50", "retencion_bordes_p25", "corr_residuo_bordes_p50",
             "croma_ratio_p50", "delta_e_suave_p50", "bloques_8px_p50", "corr_residuo_temporal_p50"]
     for reg in sorted({r["regimen"] for r in resumen}):
         filas = [r for r in resumen if r["regimen"] == reg and r["experimento"] != "sin_denoising"]
+        base = next((r for r in resumen if r["regimen"] == reg and r["experimento"] == "sin_denoising"), {})
+        for r in filas:  # % de cambio de la media frente al original (positivo = mejora)
+            for m in iqa_pres:
+                b0, v = base.get(f"{m}_media"), r.get(f"{m}_media")
+                if b0 and v is not None:
+                    d = 100.0 * (b0 - v) / abs(b0)
+                    r[f"{m}_cambio_pct"] = d if m in IQA_MENOR else -d
         for r in filas:
             desc, avisos = [], []
             c = r.get("croma_ratio_p50", 1)
@@ -306,11 +318,18 @@ def ranking(resumen, min_ret, max_corr, min_croma=0.85, max_croma=1.15, max_de=3
             if r.get("corr_residuo_bordes_p50", 0) > max_corr:
                 avisos.append(f"corr_residuo_bordes p50={r['corr_residuo_bordes_p50']:.2f} > {max_corr}")
             r["_desc"], r["_avisos"] = "; ".join(desc), "; ".join(avisos)
-        ok = sorted([r for r in filas if not r["_desc"]], key=lambda r: r.get("grano_p50", 9e9))
+        if "niqe" in iqa_pres and "brisque" in iqa_pres:
+            clave = lambda r: -0.5 * (r.get("niqe_cambio_pct", -1e9) + r.get("brisque_cambio_pct", -1e9))
+        else:
+            clave = lambda r: r.get("grano_p50", 9e9)
+        ok = sorted([r for r in filas if not r["_desc"]], key=clave)
         for pos, r in enumerate(ok, 1):
+            meta = ""
+            if "niqe_cambio_pct" in r and "brisque_cambio_pct" in r:
+                meta = " | meta 8%: " + ("SI" if min(r["niqe_cambio_pct"], r["brisque_cambio_pct"]) >= 8 else "no")
             out.append({"regimen": reg, "posicion": pos, "experimento": r["experimento"], "n": r["n"],
                         **{k: round(r.get(k, float("nan")), 3) for k in cols},
-                        "estado": "OK" + (" (aviso: " + r["_avisos"] + ")" if r["_avisos"] else "")})
+                        "estado": "OK" + meta + (" (aviso: " + r["_avisos"] + ")" if r["_avisos"] else "")})
         for r in [r for r in filas if r["_desc"]]:
             out.append({"regimen": reg, "posicion": "", "experimento": r["experimento"], "n": r["n"],
                         **{k: round(r.get(k, float("nan")), 3) for k in cols},
@@ -491,7 +510,8 @@ def main():
     graficar(filas, metricas, sal / "graficas")
     print(f"Listo: {sal}")
     for r in rk:
-        print(f"  {r['regimen']:15s} {str(r['posicion']):>3s} {r['experimento']:24s} grano={r['grano_p50']}  "
+        iq = "".join(f"{k.split('_')[0]}={r[k]:+.1f}%  " for k in r if k.endswith("_cambio_pct") and r[k] == r[k])
+        print(f"  {r['regimen']:15s} {str(r['posicion']):>3s} {r['experimento']:24s} {iq}grano={r['grano_p50']}  "
               f"croma={r['croma_ratio_p50']}  dE={r['delta_e_suave_p50']}  temporal={r['corr_residuo_temporal_p50']}  "
               f"ret_p25={r['retencion_bordes_p25']}  {r['estado']}")
 
