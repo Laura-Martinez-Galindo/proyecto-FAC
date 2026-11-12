@@ -285,6 +285,17 @@ def _tarea(t):
 
 def iqa(rutas: list[str], nombres: list[str], metricas: list[str], lote: int) -> dict:
     try:
+        import sys
+        try:
+            import pkg_resources
+        except ModuleNotFoundError:
+            try:
+                import packaging, types
+                _p = types.ModuleType("pkg_resources")
+                _p.packaging = packaging
+                sys.modules["pkg_resources"] = _p
+            except Exception:
+                pass
         import pyiqa
         import torch
     except ImportError:

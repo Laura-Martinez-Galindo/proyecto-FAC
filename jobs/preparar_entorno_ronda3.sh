@@ -5,8 +5,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source fac_env311/bin/activate
-pip install -q setuptools einops bm3d pyiqa scikit-image
+pip install -q "setuptools<80" einops bm3d pyiqa scikit-image
 python - <<'PY'
+import sys
+try:
+    import pkg_resources
+except ModuleNotFoundError:
+    try:
+        import packaging, types
+        _p = types.ModuleType("pkg_resources")
+        _p.packaging = packaging
+        sys.modules["pkg_resources"] = _p
+    except Exception:
+        pass
 import pyiqa, torch
 for m in ["niqe", "brisque", "musiq", "clipiqa", "paq2piq"]:  # paq2piq: perdida de Self2Self+
     pyiqa.create_metric(m, device=torch.device("cpu"))
