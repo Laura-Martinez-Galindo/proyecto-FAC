@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source fac_env311/bin/activate
-pip install -q einops bm3d pyiqa scikit-image
+pip install -q setuptools einops bm3d pyiqa scikit-image
 python - <<'PY'
 import pyiqa, torch
 for m in ["niqe", "brisque", "musiq", "clipiqa", "paq2piq"]:  # paq2piq: perdida de Self2Self+
