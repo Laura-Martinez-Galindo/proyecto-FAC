@@ -29,6 +29,7 @@ cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p jobs/logs
 source fac_env311/bin/activate
 module load cuda/12.1 2>/dev/null || true
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # menos memoria de GPU desperdiciada
 : "${CARRIL:?falta CARRIL}"
 L=resultados/denoising/listas
 nvidia-smi --query-gpu=name,memory.total --format=csv 2>/dev/null || true

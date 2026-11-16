@@ -137,9 +137,10 @@ def cmd_entrenar(a):
             try:
                 t = a.parche - a.parche % met.multiplo
                 x = torch.rand(a.batch, met.temporal * a.canales, t, t, device=disp) * met.escala
-                with torch.autocast(disp.type, enabled=a.amp):
-                    met.perdida(red, x, 0.5, a).backward()
-                red.zero_grad(set_to_none=True)
+                for prog in (0.0, 0.5, 0.99):  # metodos por etapas (SASS, F2R...): probar todas
+                    with torch.autocast(disp.type, enabled=a.amp):
+                        met.perdida(red, x, prog, a).backward()
+                    red.zero_grad(set_to_none=True)
                 del x
                 torch.cuda.empty_cache()
                 print(f"memoria GPU usada en la prueba: {torch.cuda.max_memory_allocated() / 2**30:.1f} GB")
@@ -249,7 +250,20 @@ def cmd_inferir(a):
         if zs:  # zero-shot: una red nueva entrenada sobre ESTA imagen
             semillas(i)
             x = torch.from_numpy(centro.transpose(2, 0, 1).astype(np.float32) / 255.0)[None].to(disp)
-            y = met.zero_shot_imagen(x, conf, disp)
+            tile_zs = 0
+            while True:  # si la imagen completa no cabe (1920x1080), zero-shot por mosaicos con solape
+                try:
+                    if tile_zs == 0:
+                        y = met.zero_shot_imagen(x, conf, disp)
+                    else:
+                        y = mosaicos(lambda t: met.zero_shot_imagen(t, conf, disp), x, tile_zs, 64, 32)
+                    break
+                except torch.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    tile_zs = 1024 if tile_zs == 0 else tile_zs // 2
+                    if tile_zs < 256:
+                        raise
+                    print(f"!! {nombre}: sin memoria; zero-shot por mosaicos de {tile_zs}", flush=True)
             out = np.rint(y[0].clamp(0, 1).detach().cpu().numpy().transpose(1, 2, 0) * 255.0).astype(np.uint8)
         elif red is None:
             out = met.clasico(centro, conf)
@@ -272,7 +286,18 @@ def cmd_inferir(a):
                 with torch.no_grad(), torch.autocast(disp.type, enabled=a.amp and disp.type == "cuda"):
                     return met.aplicar(red, t, conf)
 
-            y = mosaicos(fn, x, a.tile, a.overlap, getattr(met, "multiplo_mosaico", max(met.multiplo, 32 if met.nombre not in ("apbsn", "mmbsn") else 2)))
+            mult = getattr(met, "multiplo_mosaico", max(met.multiplo, 32 if met.nombre not in ("apbsn", "mmbsn") else 2))
+            tile = a.tile
+            while True:  # si el mosaico no cabe en la GPU, se parte a la mitad (queda en el log)
+                try:
+                    y = mosaicos(fn, x, tile, a.overlap, mult)
+                    break
+                except torch.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    if tile // 2 < max(mult, 64):
+                        raise
+                    tile //= 2
+                    print(f"!! sin memoria con mosaicos de {tile * 2}: pruebo con {tile}", flush=True)
             y = (y[0] / met.escala).clamp(0, 1).cpu().numpy().transpose(1, 2, 0) * 255.0
             out = np.rint(y).astype(np.uint8)
         guardar(dst, out)
