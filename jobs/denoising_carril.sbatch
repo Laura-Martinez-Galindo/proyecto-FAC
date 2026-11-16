@@ -73,6 +73,7 @@ minutos_restantes() {
 }
 while IFS=$'\t' read -r EXP FAM MET REC ARGS MIN; do
   [[ -z "${EXP}" || "${EXP}" == \#* ]] && continue
+  [ "${ARGS:-}" = "-" ] && ARGS=""
   SAL="${BASE_CACHE}/${FAM}/${EXP}"
   NLISTA=$(( $(wc -l < "${L}/${FAM}_evaluacion.csv") - 1 ))
   [ -n "${MAXIMG}" ] && NLISTA=2

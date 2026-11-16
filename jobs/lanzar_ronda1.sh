@@ -76,7 +76,8 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS; do
     m=$(( m + 5 ))
     [ "${REC}" = "gpu" ] || [ "${REC}" = "zs" ] || m=15
     k=1; for ((i=2; i<=CARRILES; i++)); do [ "${CARGA[$i]}" -lt "${CARGA[$k]}" ] && k=$i; done
-    printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$EXP" "$FAM" "$MET" "$REC" "${ARGS:-}" "$m" >> "jobs/carriles/${RONDA}_carril${k}.tsv"
+    # "-" = sin argumentos: bash junta dos tabuladores seguidos y correria las columnas
+    printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$EXP" "$FAM" "$MET" "$REC" "${ARGS:--}" "$m" >> "jobs/carriles/${RONDA}_carril${k}.tsv"
     CARGA[$k]=$(( CARGA[$k] + m )); N_GPU=$((N_GPU + 1))
   else
     printf "%s\t%s\t%s\t%s\t%s\n" "$EXP" "$FAM" "$MET" "$REC" "${ARGS:-}" >> "jobs/carriles/${RONDA}_cpu.tsv"
