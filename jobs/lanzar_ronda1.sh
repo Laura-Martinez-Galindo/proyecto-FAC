@@ -105,7 +105,8 @@ echo "carril CPU (${N_CPU} clasicos):"; cut -f1,2,3 "jobs/carriles/${RONDA}_cpu.
 echo "Tiempo pedido por carril de GPU: ${T_CARRIL}"
 
 # ------------------------------------------------------------------ RECURSOS DE GPU
-GPU_BASE=(-p gpu --gres=gpu:1 -t "${T_CARRIL}")
+# avisos por correo al empezar, terminar o fallar cada carril (como los demas jobs)
+GPU_BASE=(-p gpu --gres=gpu:1 -t "${T_CARRIL}" --mail-type=BEGIN,END,FAIL --mail-user="${CORREO:-lf.martinezg1@uniandes.edu.co}")
 # Tope de la QOS de gpu por USUARIO (suma de todos tus jobs): p.ej. MaxTRESPU=cpu=24,mem=...
 # Para que los 2 carriles corran A LA VEZ, cada uno pide como maximo tope/CARRILES.
 QOS_GPU=$(scontrol show partition gpu 2>/dev/null | grep -o "QoS=[^ ]*" | cut -d= -f2)
