@@ -304,7 +304,11 @@ def iqa(rutas: list[str], nombres: list[str], metricas: list[str], lote: int) ->
     disp = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out = {n: {} for n in nombres}
     for met in metricas:
-        f = pyiqa.create_metric(met, device=disp)
+        try:
+            f = pyiqa.create_metric(met, device=disp)
+        except Exception as e:  # una metrica que no carga no tumba la evaluacion
+            print(f"!! {met}: no se pudo cargar ({e}); se omite")
+            continue
         for i in range(0, len(rutas), lote):
             ts = []
             for p in rutas[i:i + lote]:
@@ -317,7 +321,16 @@ def iqa(rutas: list[str], nombres: list[str], metricas: list[str], lote: int) ->
             with torch.inference_mode():
                 for _, g in grupos.items():
                     x = torch.stack([t for _, t in g]).to(disp)
-                    v = f(x).flatten().cpu().tolist()
+                    try:
+                        v = f(x).flatten().cpu().tolist()
+                    except Exception:  # p.ej. NIQE con una imagen casi plana (SVD que no converge):
+                        v = []         # se reintenta imagen por imagen y la que falle queda en NaN
+                        for k in range(x.shape[0]):
+                            try:
+                                v.append(float(f(x[k:k + 1]).flatten()[0].cpu()))
+                            except Exception as e:
+                                print(f"!! {met} fallo en {nombres[i + g[k][0]]}: {str(e)[:80]}")
+                                v.append(float("nan"))
                     for (j, _), val in zip(g, v):
                         out[nombres[i + j]][met] = float(val) if math.isfinite(val) else float("nan")
         del f
