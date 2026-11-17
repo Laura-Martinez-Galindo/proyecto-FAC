@@ -13,7 +13,7 @@ cupy): RAFT cumple el mismo papel y corre en la GPU sin dependencias extra.
          (t-2, t, t+2) y el objetivo es t+-1 alineado (que NO esta en la entrada, asi el ruido del
          objetivo es independiente). Misma perdida.
   saved  Stathatos et al., WACV 2026 (suzanne-stathatos/SAVeD, Apache-2.0). Red DenoisingCNN_512_with_skips
-         oficial (fine_layers, bottleneck 256: el 512 del README es de la red de 1024), entrada (t, t-1, t-2), objetivo "gap1_and_curr_frame"
+         oficial (fine_layers, bottleneck 64: la red de 512 solo define 16, 32 y 64; 5 reducciones -> multiplo 32), entrada (t, t-1, t-2), objetivo "gap1_and_curr_frame"
          = t + relu(t+1 - t) + relu(t-1 - t), MSE. El repo trabaja en gris (sonar): aqui se aplica al
          brillo (Y) y se conserva el color original.
   f2r    Ji et al., ECCV 2026 (m1NGGi/F2R). Redes oficiales Fusion de la etapa 1 (estimador temporal
@@ -161,13 +161,13 @@ def _con_y(rgb, y_nueva):
 
 
 class SAVeD(Metodo):
-    nombre, temporal, multiplo, lr_defecto = "saved", 5, 16, 1e-4
+    nombre, temporal, multiplo, lr_defecto = "saved", 5, 32, 1e-4
     parche_defecto, batch_defecto = 256, 16
     optimizador = "adamw"
 
     def crear(self, a, c):
         from fac_denoise.terceros import cargar
-        return cargar("saved", "DenoisingCNN").DenoisingCNN_512_with_skips(fine_layers=True, bottleneck_size=256)
+        return cargar("saved", "DenoisingCNN").DenoisingCNN_512_with_skips(fine_layers=True, bottleneck_size=64)
 
     def _y_frames(self, x):
         c = x.shape[1] // 5

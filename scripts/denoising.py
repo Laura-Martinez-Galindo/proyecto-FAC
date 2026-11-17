@@ -58,6 +58,15 @@ import cv2  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
+def sin_memoria(e: BaseException) -> bool:
+    """True si el error es falta de memoria de GPU. Con expandable_segments el asignador falla con
+    RuntimeError "CUDA driver error: out of memory / invalid argument" en vez de OutOfMemoryError."""
+    if isinstance(e, torch.OutOfMemoryError):
+        return True
+    s = str(e).lower()
+    return isinstance(e, RuntimeError) and ("out of memory" in s or "cuda driver error" in s)
+
+
 def mosaicos(fn, x, tile, overlap, multiplo):
     """Aplica fn por mosaicos de tamano fijo (multiplo de `multiplo`) con mezcla suave.
     x: 1 x Cin x H x W. Devuelve 1 x Cout x H x W."""
@@ -145,7 +154,9 @@ def cmd_entrenar(a):
                 torch.cuda.empty_cache()
                 print(f"memoria GPU usada en la prueba: {torch.cuda.max_memory_allocated() / 2**30:.1f} GB")
                 break
-            except torch.cuda.OutOfMemoryError:
+            except RuntimeError as e:
+                if not sin_memoria(e):
+                    raise
                 red.zero_grad(set_to_none=True)
                 torch.cuda.empty_cache()
                 if a.batch < 2:
@@ -258,7 +269,9 @@ def cmd_inferir(a):
                     else:
                         y = mosaicos(lambda t: met.zero_shot_imagen(t, conf, disp), x, tile_zs, 64, 32)
                     break
-                except torch.OutOfMemoryError:
+                except RuntimeError as e:
+                    if not sin_memoria(e):
+                        raise
                     torch.cuda.empty_cache()
                     tile_zs = 1024 if tile_zs == 0 else tile_zs // 2
                     if tile_zs < 256:
@@ -292,7 +305,9 @@ def cmd_inferir(a):
                 try:
                     y = mosaicos(fn, x, tile, a.overlap, mult)
                     break
-                except torch.OutOfMemoryError:
+                except RuntimeError as e:
+                    if not sin_memoria(e):
+                        raise
                     torch.cuda.empty_cache()
                     if tile // 2 < max(mult, 64):
                         raise

@@ -29,7 +29,8 @@ cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p jobs/logs
 source fac_env311/bin/activate
 module load cuda/12.1 2>/dev/null || true
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # menos memoria de GPU desperdiciada
+# (sin expandable_segments: con ese modo la falta de memoria sale como "CUDA driver error" y no se
+# puede reintentar con un batch o un mosaico mas chico)
 : "${CARRIL:?falta CARRIL}"
 L=resultados/denoising/listas
 nvidia-smi --query-gpu=name,memory.total --format=csv 2>/dev/null || true
