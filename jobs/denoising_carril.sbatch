@@ -32,7 +32,7 @@ module load cuda/12.1 2>/dev/null || true
 # (sin expandable_segments: con ese modo la falta de memoria sale como "CUDA driver error" y no se
 # puede reintentar con un batch o un mosaico mas chico)
 : "${CARRIL:?falta CARRIL}"
-L=resultados/denoising/listas
+L="${LISTAS:-resultados/denoising/listas}"   # fase 2: resultados/denoising/listas_fase2
 nvidia-smi --query-gpu=name,memory.total --format=csv 2>/dev/null || true
 echo "Carril ${CARRIL} | CPUs ${SLURM_CPUS_PER_TASK:-?} | nodo $(hostname)"
 
@@ -47,7 +47,7 @@ if [ "${PREPARAR_LISTAS:-0}" = "1" ]; then
     MASC=""
     [ -d datasets/dataset_sin_hud/mascaras_hud ] || MASC="--exportar-mascaras datasets/dataset_sin_hud/mascaras_hud"
     python scripts/listas_denoising.py --max-por-familia "${MAX_POR_FAMILIA:-1500}" \
-        --max-evaluacion "${MAX_EVALUACION:-120}" ${MASC} && touch "$MARCA"
+        --max-evaluacion "${MAX_EVALUACION:-120}" --margen "${MARGEN:-90}" --salida "${L}" ${MASC} && touch "$MARCA"
   else
     echo "== Listas ya armadas por el otro carril"
   fi
@@ -61,7 +61,7 @@ flock 8
 FAM1=$(python -c "import json;print(list(json.load(open('config/denoising/familias.json')))[0])")
 if [ ! -f "${L}/${FAM1}_vecinos.csv" ]; then
   echo "== Preparando frames vecinos (scripts/preparar_vecinos.py)"
-  python scripts/preparar_vecinos.py --n "${N_VECINOS:-20}" || echo "!! no se pudieron preparar los vecinos (sin metricas temporales)"
+  python scripts/preparar_vecinos.py --listas "${L}" --n "${N_VECINOS:-20}" || echo "!! no se pudieron preparar los vecinos (sin metricas temporales)"
 fi
 flock -u 8
 

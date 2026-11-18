@@ -25,6 +25,7 @@ cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p jobs/logs
 source fac_env311/bin/activate
 RONDA="${RONDA:-ronda1}"
+L="${LISTAS:-resultados/denoising/listas}"
 FAMILIAS="${FAMILIAS:-$(python -c "import json;print(' '.join(json.load(open('config/denoising/familias.json'))))")}"
 
 evaluar_todo() {
@@ -46,7 +47,7 @@ for F in ${FAMILIAS}; do
   if [ ${#EXPS[@]} -eq 0 ]; then echo "!! ${F}: no hay experimentos"; continue; fi
   echo "=================== ${F} ==================="
   python scripts/evaluar_denoising.py --entrada datasets/dataset_sin_hud/images \
-      --lista "resultados/denoising/listas/${F}_evaluacion.csv" \
+      --lista "${L}/${F}_evaluacion.csv" \
       --regimenes datasets/dataset_original/regimenes_dataset.csv \
       --mascaras datasets/dataset_sin_hud/mascaras_hud \
       "${EXPS[@]}" --salida "resultados/denoising/${RONDA}/${F}" \
@@ -60,14 +61,14 @@ evaluar_todo
 if [ "${COMBINAR:-0}" = "1" ]; then
   for F in ${FAMILIAS}; do
     R="resultados/denoising/${RONDA}/${F}/ranking.csv"
-    [ -f "$R" ] && python scripts/combinaciones.py --familia "$F" --ranking "$R" || echo "!! ${F}: sin combinaciones"
+    [ -f "$R" ] && python scripts/combinaciones.py --familia "$F" --ranking "$R" --listas "${L}" || echo "!! ${F}: sin combinaciones"
   done
   echo "=================== EVALUACION CON LAS COMBINACIONES ==================="
   evaluar_todo
 fi
 
 # un solo archivo para traer al PC
-tar -cf "resultados/denoising/${RONDA}.tar" -C resultados/denoising "${RONDA}" listas
+tar -cf "resultados/denoising/${RONDA}.tar" -C resultados/denoising "${RONDA}" "$(basename "${L}")"
 # muestras para mirar a ojo: 4 imagenes limpias + su residuo por experimento, y los logs de los carriles
 MUESTRAS=()
 for F in ${FAMILIAS}; do

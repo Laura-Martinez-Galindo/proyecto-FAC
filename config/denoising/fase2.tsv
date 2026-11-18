@@ -1,0 +1,19 @@
+# FASE 2 de denoising: los 3 mejores de cada regimen en la ronda 3, por reduccion de grano (mediana por
+# imagen) entre los que conservan los bordes (p25 >= 0,8) y no cambian el color (delta E < 2,5).
+# Cambios frente a la ronda 3 (fase 1, seleccion):
+#   * entrenamiento con hasta 6.000 frames del regimen y SIN excluir los frames cercanos al dataset
+#     (en autosupervisado es valido: no se usan las etiquetas, solo el video ruidoso)
+#   * 12.000 pasos (3x)
+#   * se limpian TODAS las imagenes del dataset del regimen (823 / 97 / 162), no una muestra
+#   * los zero-shot (DIP, MASH) entrenan una red por imagen: son lentos; si el carril se queda sin
+#     tiempo, se vuelve a lanzar y sigue en la imagen donde iba
+# Columnas: experimento, familia(regimen), metodo, recurso, argumentos
+dip_f2	HDEO_DDE_HAZE	dip	zs	
+mash_f2	HDEO_DDE_HAZE	mash	zs	
+f2f_f2	HDEO_DDE_HAZE	f2f	gpu	
+rdrf_f2	HDEO_HAZE	rdrf	gpu	
+stbn_f2	HDEO_HAZE	stbn	gpu	
+cvfsid_f2	HDEO_HAZE	cvfsid	gpu	
+apbsn_f2	HDEO_DDE	apbsn	gpu	
+mmbsn_f2	HDEO_DDE	mmbsn	gpu	
+puca_f2	HDEO_DDE	puca	gpu	
