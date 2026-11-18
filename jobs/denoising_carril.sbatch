@@ -105,7 +105,7 @@ while IFS=$'\t' read -r EXP FAM MET REC ARGS MIN; do
     [[ " ${ARGS:-} " == *" --amp "* ]] && INF_ARGS="--amp"
     python scripts/denoising.py entrenar --metodo "${MET}" --familia "${FAM}" \
         --lista "${L}/${FAM}_entrenamiento.csv" --salida "${SAL}" \
-        --pasos "${PASOS_RONDA}" --instantaneas 2000 ${ARGS:-} \
+        --pasos "${PASOS_RONDA}" --instantaneas 2000 ${ENTRENAR_EXTRA:-} ${ARGS:-} \
       && python scripts/denoising.py inferir --checkpoint "${SAL}/modelo.pt" \
         --lista "${L}/${FAM}_evaluacion.csv" --entrada datasets/dataset_sin_hud/images \
         --salida "${SAL}/salidas" --residuo ${INF_ARGS} ${MAXIMG}

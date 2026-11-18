@@ -114,6 +114,57 @@ def cmd_metodos(a):
               f"batch={m.batch_defecto}  lr={m.lr_defecto}")
 
 
+def separar_validacion(muestras, n, margen, semilla):
+    """Parada temprana: aparta n frames de validacion repartidos en todo el video y quita del
+    entrenamiento los frames a +-margen de cada uno (frames tan cercanos son casi iguales y la
+    validacion no detectaria el sobreajuste). Devuelve (entrenamiento, validacion)."""
+    orden = sorted(muestras)
+    if n <= 0 or len(orden) < 20 * n:
+        return muestras, []
+    paso = len(orden) / n
+    rng = random.Random(semilla + 1)
+    val = [orden[min(len(orden) - 1, int(i * paso + rng.random() * paso))] for i in range(n)]
+    cerca = {}
+    for v, k in val:
+        cerca.setdefault(v, []).append(k)
+    for v in cerca:
+        cerca[v].sort()
+    import bisect
+    def junto(v, k):
+        ks = cerca.get(v)
+        if not ks:
+            return False
+        i = bisect.bisect_left(ks, k - margen)
+        return i < len(ks) and ks[i] <= k + margen
+    ent = [m for m in muestras if not junto(*m)]
+    return ent, val
+
+
+def perdida_validacion(met, red, lotes, disp, usar_amp, a, progreso):
+    """Perdida del propio metodo en lotes fijos de validacion, sin gradiente y con las mismas
+    mascaras aleatorias cada vez (semilla fija). La red queda en modo train (algunas redes, como
+    AP-BSN, cambian de comportamiento en eval) y se restauran los buffers (BatchNorm)."""
+    estados = (random.getstate(), np.random.get_state(), torch.get_rng_state(),
+               torch.cuda.get_rng_state_all() if disp.type == "cuda" else None)
+    buffers = {k: v.detach().clone() for k, v in red.state_dict().items()
+               if "running" in k or "num_batches" in k}
+    random.seed(12345)
+    np.random.seed(12345)
+    torch.manual_seed(12345)
+    total = 0.0
+    with torch.no_grad(), torch.autocast(disp.type, enabled=usar_amp):
+        for xb in lotes:
+            total += met.perdida(red, xb.to(disp) * met.escala, progreso, a).item() / met.escala
+    if buffers:
+        red.load_state_dict(buffers, strict=False)
+    random.setstate(estados[0])
+    np.random.set_state(estados[1])
+    torch.set_rng_state(estados[2])
+    if estados[3] is not None:
+        torch.cuda.set_rng_state_all(estados[3])
+    return total / max(1, len(lotes))
+
+
 def cmd_entrenar(a):
     met = METODOS[a.metodo]
     if not met.entrenable:
@@ -138,6 +189,13 @@ def cmd_entrenar(a):
           f"({', '.join(f'{v}={sum(1 for m in muestras if m[0] == v)}' for v in videos)})")
     if not muestras:
         sys.exit("No hay frames para entrenar.")
+    val_m = []
+    if a.parada_temprana:
+        n_val = max(20, min(a.frames_validacion, len(muestras) // 200))
+        muestras, val_m = separar_validacion(muestras, n_val, a.margen_validacion, a.semilla)
+        print(f"parada temprana: {len(val_m)} frames de validacion (sin +-{a.margen_validacion} vecinos en "
+              f"entrenamiento) | {len(muestras)} frames de entrenamiento | validar cada {a.validar_cada} pasos, "
+              f"paciencia {a.paciencia}, minimo {a.min_pasos} pasos")
 
     red = met.crear(a, a.canales).to(disp)
     if disp.type == "cuda":  # si el batch no cabe en la GPU, se reduce a la mitad (queda registrado)
@@ -183,6 +241,20 @@ def cmd_entrenar(a):
         torch.save({"metodo": a.metodo, "modelo": red.state_dict(), "canales": a.canales,
                     "args": vars(a), "paso": paso}, ruta)
 
+    lotes_val = []
+    if val_m:  # lotes fijos de validacion (siempre los mismos parches)
+        random.seed(a.semilla + 7)
+        np.random.seed(a.semilla + 7)
+        nb = a.batch // a.parches_por_carga
+        dsv = Parches(val_m, fuentes, a.canales, a.parche, a.lotes_validacion * nb,
+                      temporal=met.temporal, por_carga=a.parches_por_carga, multiplo=met.multiplo)
+        items = [dsv[i] for i in range(a.lotes_validacion * nb)]
+        lotes_val = [torch.stack(items[j * nb:(j + 1) * nb]).flatten(0, 1) for j in range(a.lotes_validacion)]
+        semillas(a.semilla)
+    logv = open(sal / "validacion.csv", "w") if lotes_val else None
+    if logv:
+        logv.write("paso,loss_validacion,mejor,sin_mejora\n")
+    mejor, paso_mejor, sin_mejora, parada = float("inf"), 0, 0, ""
     t0, media = time.time(), None
     red.train()
     for paso, x in enumerate(dl, 1):
@@ -203,10 +275,31 @@ def cmd_entrenar(a):
         if paso in a.instantaneas:
             guardar_ck(sal / f"modelo_p{paso}.pt", paso)
         if paso % a.guardar_cada == 0 or paso == a.pasos:
-            guardar_ck(sal / "modelo.pt", paso)
+            # con parada temprana, modelo.pt es el MEJOR en validacion; el ultimo va aparte
+            guardar_ck(sal / ("modelo_ultimo.pt" if lotes_val else "modelo.pt"), paso)
+        if lotes_val and (paso % a.validar_cada == 0 or paso == a.pasos):
+            vl = perdida_validacion(met, red, lotes_val, disp, usar_amp, a, paso / a.pasos)
+            if vl < mejor * (1 - a.min_mejora):
+                mejor, paso_mejor, sin_mejora = vl, paso, 0
+                guardar_ck(sal / "modelo.pt", paso)
+            else:
+                sin_mejora += 1
+            logv.write(f"{paso},{vl:.6g},{mejor:.6g},{sin_mejora}\n")
+            logv.flush()
+            print(f"  validacion paso {paso}: {vl:.6g} (mejor {mejor:.6g} en el paso {paso_mejor}, "
+                  f"{sin_mejora} sin mejorar)", flush=True)
+            if paso >= a.min_pasos and sin_mejora >= a.paciencia:
+                parada = f"parada temprana en el paso {paso}: {a.paciencia} validaciones sin mejorar"
+                print("== " + parada + f"; se usa el modelo del paso {paso_mejor}", flush=True)
+                break
         if paso >= a.pasos:
             break
-    meta = {"frames_entrenamiento": len(muestras), "segundos": round(time.time() - t0),
+    if logv:
+        logv.close()
+    meta = {"frames_entrenamiento": len(muestras), "frames_validacion": len(val_m), "paso_final": paso,
+            "paso_mejor": paso_mejor if lotes_val else paso, "loss_validacion_mejor": None if not lotes_val else mejor,
+            "parada": parada or ("sin parada temprana" if not lotes_val else "llego al maximo de pasos"),
+            "segundos": round(time.time() - t0),
             "parametros_M": round(n_par / 1e6, 3), **vars(a)}
     (sal / "configuracion.json").write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
     print(f"Checkpoint: {sal / 'modelo.pt'}  ({time.time() - t0:.0f} s)")
@@ -373,6 +466,15 @@ def main():
     e.add_argument("--guardar-cada", type=int, default=500)
     e.add_argument("--semilla", type=int, default=0)
     e.add_argument("--amp", action="store_true", help="precision mixta en GPU")
+    e.add_argument("--parada-temprana", action="store_true",
+                   help="aparta frames de validacion y para si su perdida deja de bajar (modelo.pt = el mejor)")
+    e.add_argument("--validar-cada", type=int, default=500)
+    e.add_argument("--paciencia", type=int, default=4, help="validaciones seguidas sin mejorar antes de parar")
+    e.add_argument("--min-pasos", type=int, default=3000, help="no parar antes de estos pasos")
+    e.add_argument("--min-mejora", type=float, default=0.001, help="mejora relativa minima que cuenta")
+    e.add_argument("--frames-validacion", type=int, default=200)
+    e.add_argument("--margen-validacion", type=int, default=15, help="frames vecinos de validacion fuera del entrenamiento")
+    e.add_argument("--lotes-validacion", type=int, default=8)
     e.add_argument("--cpu", action="store_true")
     argumentos_todos(e)
 

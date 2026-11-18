@@ -16,6 +16,7 @@ export MARGEN=0                       # sin excluir frames cercanos al dataset
 export MAX_POR_FAMILIA="${MAX_POR_FAMILIA:-1000000}"   # TODOS los frames del regimen (el tiempo lo fijan los pasos, no los frames)
 export MAX_EVALUACION=0               # todas las imagenes del regimen
 export PASOS="${PASOS:-12000}"
+export ENTRENAR_EXTRA="${ENTRENAR_EXTRA:---parada-temprana}"   # para si la perdida de validacion deja de bajar
 export IQA="${IQA:-niqe brisque musiq clipiqa}"
 export COMBINAR="${COMBINAR:-1}"      # ensembles y stacks de los 3, y se vuelven a evaluar
 if [ "${RELISTAR:-0}" = "1" ]; then
