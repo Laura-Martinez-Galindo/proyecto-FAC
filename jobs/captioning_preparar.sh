@@ -7,12 +7,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source fac_env311/bin/activate
 MODELOS="${MODELOS:-Qwen/Qwen2.5-VL-7B-Instruct}"
+# El login mata procesos que usan mucha RAM: se descarga de a un archivo y sin el modo rapido de xet.
+# Si se corta, volver a correr: continua donde iba.
+export HF_XET_HIGH_PERFORMANCE=0 HF_HUB_ENABLE_HF_TRANSFER=0
 for M in ${MODELOS}; do
   echo "Descargando ${M} ..."
   python - "$M" <<'PY'
 import sys
 from huggingface_hub import snapshot_download
-ruta = snapshot_download(sys.argv[1], allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model", "*.jinja"])
+ruta = snapshot_download(sys.argv[1], allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model", "*.jinja"],
+                         max_workers=1)
 print("pesos en:", ruta)
 from transformers import AutoProcessor
 AutoProcessor.from_pretrained(sys.argv[1])
