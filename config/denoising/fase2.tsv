@@ -5,12 +5,11 @@
 #     (en autosupervisado es valido: no se usan las etiquetas, solo el video ruidoso)
 #   * 12.000 pasos (3x)
 #   * se limpian TODAS las imagenes del dataset del regimen (823 / 97 / 162), no una muestra
-#   * los zero-shot (DIP, MASH) entrenan una red por imagen: son lentos; si el carril se queda sin
-#     tiempo, se vuelve a lanzar y sigue en la imagen donde iba
+#   * sin metodos zero-shot (una red por imagen): no son viables para videos completos
 # Columnas: experimento, familia(regimen), metodo, recurso, argumentos
-dip_f2	HDEO_DDE_HAZE	dip	zs	
-mash_f2	HDEO_DDE_HAZE	mash	zs	
 f2f_f2	HDEO_DDE_HAZE	f2f	gpu	
+pcst_f2	HDEO_DDE_HAZE	pcst	gpu	
+rdrf_f2	HDEO_DDE_HAZE	rdrf	gpu	
 rdrf_f2	HDEO_HAZE	rdrf	gpu	
 stbn_f2	HDEO_HAZE	stbn	gpu	
 cvfsid_f2	HDEO_HAZE	cvfsid	gpu	
