@@ -2,12 +2,14 @@
 """Analisis del experimento 2 de dense video captioning (orientado a mineria ilegal).
 
 Cruza cada ventana que respondio el modelo con las imagenes anotadas del dataset que caen dentro de
-ella (por video y segundo). Una ventana es SDZI+ si alguna de sus imagenes tiene una caja SDZI, SDZI-
-si tiene imagenes anotadas y ninguna tiene SDZI, y "sin etiqueta" si no cae ninguna imagen anotada.
+ella (por video y segundo). Una ventana es maquinaria+ si alguna de sus imagenes tiene una caja de
+maquinaria pesada (clase 4, antes llamada SDZI), maquinaria- si tiene imagenes anotadas y ninguna la
+tiene, y "sin etiqueta" si no cae ninguna imagen anotada. Los indicadores de suelo removido, piscinas,
+dragas, agua turbia y deforestacion no tienen etiqueta: se cuentan y se revisan a ojo.
 
 Salidas en --salida:
   ventanas_eval.csv     una fila por ventana: respuesta del modelo + etiquetas que caen en ella
-  metricas.csv          por configuracion (version x prompt x etapa): AUROC del puntaje contra SDZI,
+  metricas.csv          por configuracion (version x prompt x etapa): AUROC del puntaje contra maquinaria,
                         sensibilidad / falsas alarmas con umbral 5 y 7, falsas alarmas en el control (video2)
   indicadores.csv       acuerdo de cada indicador del modelo con la etiqueta correspondiente
   hud.csv               con HUD vs sin HUD, ventana por ventana
@@ -28,11 +30,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-ETIQ = {"SDZI": "SDZI", "river": "rio", "road": "via", "building": "edificacion", "vehicle": "vehiculo"}
+ETIQ = {"maquinaria": "maquinaria", "river": "rio", "road": "via", "building": "edificacion", "vehicle": "vehiculo"}
+# la clase 4 se llamaba SDZI; es maquinaria pesada (solo cambio el nombre). Se aceptan ambos nombres.
 # indicador del modelo -> etiqueta del dataset con la que se compara
 PAREJAS = {"rio": "river", "via_o_trocha": "road", "maquinaria": "vehicle", "campamento": "building",
-           "zona_urbana": "building", "suelo_removido": "SDZI", "piscinas": "SDZI", "draga_o_balsa": "SDZI",
-           "agua_turbia": "SDZI", "deforestacion": "SDZI"}
+           "zona_urbana": "building", "maquinaria": "maquinaria"}
+# indicadores sin etiqueta en el dataset: se revisan a ojo con las hojas de contacto
+SIN_ETIQUETA = ["suelo_removido", "piscinas", "draga_o_balsa", "agua_turbia", "deforestacion"]
 MINEROS = ["draga_o_balsa", "agua_turbia", "piscinas", "suelo_removido", "maquinaria", "campamento", "deforestacion"]
 
 
@@ -70,21 +74,21 @@ def cargar(resultados: Path) -> pd.DataFrame:
                      descartados="|".join(map(str, vj.get("descartados") or [])),
                      n_evidencia=len(j.get("evidencia") or []), segundos=d.get("segundos"),
                      ruta_mosaico=f"{f.parent.name}/mosaicos/{d['video']}_{int(round(d['inicio_s'] * 1000)):08d}.jpg")
-            for k in PAREJAS:
+            for k in list(PAREJAS) + SIN_ETIQUETA:
                 r[f"m_{k}"] = ind.get(k, "")
             filas.append(r)
     return pd.DataFrame(filas)
 
 
 def etiquetar(df, corr):
-    c = pd.read_csv(corr, encoding="utf-8-sig")
+    c = pd.read_csv(corr, encoding="utf-8-sig").rename(columns={"SDZI": "maquinaria"})
     out = []
     for _, r in df.iterrows():
         g = c[(c.video == r.video) & (c.segundo >= r.inicio_s) & (c.segundo < r.fin_s)]
         e = {"n_imagenes": len(g)}
         for k in ETIQ:
             e[f"l_{k}"] = int((g[k] > 0).sum()) if len(g) else 0
-        e["clase"] = "sin etiqueta" if len(g) == 0 else ("SDZI+" if e["l_SDZI"] > 0 else "SDZI-")
+        e["clase"] = "sin etiqueta" if len(g) == 0 else ("maquinaria+" if e["l_maquinaria"] > 0 else "maquinaria-")
         out.append(e)
     return pd.concat([df.reset_index(drop=True), pd.DataFrame(out)], axis=1)
 
@@ -96,12 +100,12 @@ def metricas(df):
             if etapa == "riesgo_inicial" and not g.verificada.any():
                 continue
             e = g[g.clase != "sin etiqueta"].dropna(subset=[etapa])
-            y, s = e.clase == "SDZI+", e[etapa]
+            y, s = e.clase == "maquinaria+", e[etapa]
             ctrl = g[(g.video == "video2")].dropna(subset=[etapa])
             fila = dict(version=ver, prompt=pr, etapa=etapa.replace("riesgo_", ""), ventanas=len(g),
                         json_valido=f"{g.json_valido.mean():.0%}", ventanas_etiquetadas=len(e),
-                        sdzi_pos=int(y.sum()), sdzi_neg=int((~y).sum()), auroc=round(auroc(y, s), 3),
-                        mediana_riesgo_sdzi_pos=s[y].median(), mediana_riesgo_sdzi_neg=s[~y].median())
+                        maq_pos=int(y.sum()), maq_neg=int((~y).sum()), auroc=round(auroc(y, s), 3),
+                        mediana_riesgo_maq_pos=s[y].median(), mediana_riesgo_maq_neg=s[~y].median())
             for u in (5, 7):
                 tp, fp = int(((s >= u) & y).sum()), int(((s >= u) & ~y).sum())
                 fila[f"sensibilidad@{u}"] = round(tp / max(1, y.sum()), 3)
@@ -124,6 +128,14 @@ def indicadores(df):
                               modelo_dice_si=int(m.sum()), incierto=f"{inc:.0%}",
                               sensibilidad=round((m & y).sum() / max(1, y.sum()), 3),
                               especificidad=round((~m & ~y).sum() / max(1, (~y).sum()), 3)))
+    for (ver,), g in df[df.prompt == "mineria"].groupby(["version"]):
+        for k in SIN_ETIQUETA:
+            m = g[f"m_{k}"].map(si)
+            y = g.clase == "maquinaria+"
+            filas.append(dict(version=ver, indicador=k, etiqueta="(sin etiqueta)", ventanas=len(g),
+                              con_etiqueta=None, modelo_dice_si=int(m.sum()),
+                              incierto=f"{(g[f'm_{k}'].astype(str).str.lower() == 'incierto').mean():.0%}",
+                              sensibilidad=round((m & y).sum() / max(1, y.sum()), 3), especificidad=None))
     return pd.DataFrame(filas)
 
 
@@ -149,8 +161,8 @@ def figuras(df, met, h, sal):
     fd = sal / "figuras"
     fd.mkdir(parents=True, exist_ok=True)
     confs = sorted(df.groupby(["version", "prompt"]).groups)
-    clases = ["SDZI+", "SDZI-", "sin etiqueta"]
-    col = {"SDZI+": "#b7472a", "SDZI-": "#4a7c59", "sin etiqueta": "#9a9a9a"}
+    clases = ["maquinaria+", "maquinaria-", "sin etiqueta"]
+    col = {"maquinaria+": "#b7472a", "maquinaria-": "#4a7c59", "sin etiqueta": "#9a9a9a"}
     fig, ax = plt.subplots(1, len(confs), figsize=(4.2 * len(confs), 4), sharey=True, squeeze=False)
     for a, (ver, pr) in zip(ax[0], confs):
         g = df[(df.version == ver) & (df.prompt == pr)]
@@ -181,10 +193,10 @@ def figuras(df, met, h, sal):
                 a.plot((x.inicio_s + x.fin_s) / 2 / 60, x.riesgo_final, "-o", ms=3, lw=1.2, color=c,
                        label={"sin_hud": "sin HUD", "original": "con HUD", "denoised": "denoised"}[ver])
         x = g[g.version == g.version.iloc[0]]
-        for _, r in x[x.clase == "SDZI+"].iterrows():
+        for _, r in x[x.clase == "maquinaria+"].iterrows():
             a.axvspan(r.inicio_s / 60, r.fin_s / 60, color="#b7472a", alpha=.12, lw=0)
         a.set_ylim(-.3, 10.3); a.set_xlabel("minuto del video"); a.set_ylabel("riesgo")
-        a.set_title(f"{vid}: puntaje del modelo (prompt 'mineria'); en rojo las ventanas con imagenes SDZI", fontsize=10)
+        a.set_title(f"{vid}: puntaje del modelo (prompt 'mineria'); en rojo las ventanas con maquinaria anotada", fontsize=10)
         a.legend(frameon=False, fontsize=8); a.spines[["top", "right"]].set_visible(False)
         plt.tight_layout(); plt.savefig(fd / f"linea_tiempo_{vid}.png", dpi=150); plt.close()
 
@@ -216,8 +228,8 @@ def main():
     ind = indicadores(df); ind.to_csv(sal / "indicadores.csv", index=False)
     h = hud(df); h.to_csv(sal / "hud.csv", index=False)
     e = df[df.clase != "sin etiqueta"].copy()
-    e["error"] = np.where((e.riesgo_final >= 5) & (e.clase == "SDZI-"), "falso positivo",
-                          np.where((e.riesgo_final < 5) & (e.clase == "SDZI+"), "falso negativo", ""))
+    e["error"] = np.where((e.riesgo_final >= 5) & (e.clase == "maquinaria-"), "falso positivo",
+                          np.where((e.riesgo_final < 5) & (e.clase == "maquinaria+"), "falso negativo", ""))
     e[e.error != ""].sort_values(["error", "video", "inicio_s"])[
         ["error", "video", "version", "prompt", "inicio_s", "fin_s", "riesgo_inicial", "riesgo_final", "escena",
          "descripcion", "justificacion", "descartados", "calidad", "motivo_calidad", "ruta_mosaico"]

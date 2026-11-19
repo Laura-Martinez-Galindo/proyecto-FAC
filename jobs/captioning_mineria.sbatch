@@ -13,8 +13,8 @@
 #SBATCH --error=jobs/logs/cap_mineria_%j.err
 
 # Experimento 2 de dense video captioning, orientado a MINERIA ILEGAL (zero-shot, sin entrenar).
-# Diferencias con el experimento 1 (que fue sobre el video2, donde no hay ninguna etiqueta SDZI):
-#  * Tramos con zonas SDZI anotadas: video1 (60 imagenes SDZI) y video3 (86); el video2 queda como
+# Diferencias con el experimento 1 (que fue sobre el video2, donde no hay maquinaria anotada):
+#  * Tramos con maquinaria pesada anotada (clase 4, antes SDZI): video1 (60 imagenes) y video3 (86); el video2 como
 #    control negativo (pueblo y vias, para medir falsas alarmas).
 #  * Prompt "mineria": 8 indicadores de mineria aluvial + 2 de contexto, evidencia por frame y ubicacion,
 #    y despues el puntaje 0-10 con una escala explicita. "mineria_corto": mismo objetivo sin la lista
@@ -32,7 +32,7 @@
 # etiquetas del dataset que caen en ella).
 # Variables: MODELO, TRAMOS ("video1:0:700 video3:100:720 video2:1980:2770"), PROMPTS ("mineria mineria_corto"),
 #   VERSIONES ("sin_hud original"), VENTANA (16) PASO (8) FRAMES (6) LADO (896) VERIFICAR (5)
-#   HUMO=1: 3 ventanas del video1 donde hay SDZI (3:28), solo sin_hud + mineria, para probar en minutos.
+#   HUMO=1: 3 ventanas del video1 donde hay maquinaria (3:28), solo sin_hud + mineria, para probar en minutos.
 # Resultado: resultados/captioning_mineria_<versiones>.tar (texto + hojas de contacto pequenas)
 
 set -uo pipefail
