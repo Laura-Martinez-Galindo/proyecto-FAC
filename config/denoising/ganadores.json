@@ -1,0 +1,5 @@
+{
+  "HDEO_DDE_HAZE": {"metodo": "Frame2Frame", "experimento": "f2f_f2_ycolor", "entrenamiento": "f2f_f2"},
+  "HDEO_HAZE":     {"metodo": "CVF-SID",     "experimento": "cvfsid_f2",     "entrenamiento": "cvfsid_f2"},
+  "HDEO_DDE":      {"metodo": "PUCA",        "experimento": "puca_f2",       "entrenamiento": "puca_f2"}
+}
