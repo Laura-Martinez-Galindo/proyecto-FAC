@@ -128,15 +128,21 @@ def indicadores(df):
 
 
 def hud(df):
+    """Cada version contra sin_hud, ventana por ventana: original (efecto del HUD) y denoised (efecto
+    del denoising)."""
     k = ["video", "prompt", "inicio_s"]
     a = df[df.version == "sin_hud"].set_index(k)
-    b = df[df.version == "original"].set_index(k)
-    j = a.join(b, lsuffix="_sin_hud", rsuffix="_con_hud", how="inner")
-    if j.empty:
-        return j
-    j["dif_riesgo"] = j.riesgo_final_con_hud - j.riesgo_final_sin_hud
-    return j.reset_index()[k + ["clase_sin_hud", "riesgo_final_sin_hud", "riesgo_final_con_hud", "dif_riesgo",
-                                "descripcion_sin_hud", "descripcion_con_hud"]]
+    partes = []
+    for otra in ("original", "denoised"):
+        b = df[df.version == otra].set_index(k)
+        j = a.join(b, lsuffix="_sin_hud", rsuffix="_otra", how="inner")
+        if j.empty:
+            continue
+        j["comparacion"] = f"{otra} - sin_hud"
+        j["dif_riesgo"] = j.riesgo_final_otra - j.riesgo_final_sin_hud
+        partes.append(j.reset_index()[k + ["comparacion", "clase_sin_hud", "riesgo_final_sin_hud", "riesgo_final_otra",
+                                           "dif_riesgo", "descripcion_sin_hud", "descripcion_otra"]])
+    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
 
 
 def figuras(df, met, h, sal):
@@ -158,7 +164,7 @@ def figuras(df, met, h, sal):
         for i, d in enumerate(datos):
             a.scatter(np.full(len(d), i + 1) + np.random.uniform(-.08, .08, len(d)), d, s=6, c="k", alpha=.35)
         a.set_xticks([1, 2, 3]); a.set_xticklabels([f"{c}\n(n={len(d)})" for c, d in zip(clases, datos)], fontsize=8)
-        a.set_title(f"{'sin HUD' if ver == 'sin_hud' else 'con HUD'} · {pr}", fontsize=10)
+        a.set_title(f"{ {'sin_hud': 'sin HUD', 'original': 'con HUD', 'denoised': 'denoised'}[ver]} · {pr}", fontsize=10)
         a.axhline(5, color="gray", ls=":", lw=.8)
         a.spines[["top", "right"]].set_visible(False)
     ax[0][0].set_ylabel("riesgo de mineria (0-10)")
@@ -169,11 +175,11 @@ def figuras(df, met, h, sal):
         if g.empty:
             continue
         fig, a = plt.subplots(figsize=(13, 3.4))
-        for ver, c in (("sin_hud", "#1f4e79"), ("original", "#c98a2b")):
+        for ver, c in (("sin_hud", "#1f4e79"), ("original", "#c98a2b"), ("denoised", "#4a7c59")):
             x = g[g.version == ver].sort_values("inicio_s")
             if len(x):
                 a.plot((x.inicio_s + x.fin_s) / 2 / 60, x.riesgo_final, "-o", ms=3, lw=1.2, color=c,
-                       label="sin HUD" if ver == "sin_hud" else "con HUD")
+                       label={"sin_hud": "sin HUD", "original": "con HUD", "denoised": "denoised"}[ver])
         x = g[g.version == g.version.iloc[0]]
         for _, r in x[x.clase == "SDZI+"].iterrows():
             a.axvspan(r.inicio_s / 60, r.fin_s / 60, color="#b7472a", alpha=.12, lw=0)
@@ -183,15 +189,15 @@ def figuras(df, met, h, sal):
         plt.tight_layout(); plt.savefig(fd / f"linea_tiempo_{vid}.png", dpi=150); plt.close()
 
     if len(h):
-        fig, a = plt.subplots(figsize=(5, 4))
-        prs = sorted(h.prompt.unique())
-        d = [h[h.prompt == p].dif_riesgo.dropna().values for p in prs]
+        grupos = sorted(h.groupby(["comparacion", "prompt"]).groups)
+        fig, a = plt.subplots(figsize=(2.2 * len(grupos) + 1, 4))
+        d = [h[(h.comparacion == c) & (h.prompt == p)].dif_riesgo.dropna().values for c, p in grupos]
         p = a.violinplot(d, showmedians=True, showextrema=False)
         p["cmedians"].set_color("k")
         a.axhline(0, color="gray", ls="--", lw=.8)
-        a.set_xticks(range(1, len(prs) + 1)); a.set_xticklabels(prs)
-        a.set_ylabel("riesgo con HUD - riesgo sin HUD"); a.spines[["top", "right"]].set_visible(False)
-        plt.tight_layout(); plt.savefig(fd / "efecto_hud.png", dpi=150); plt.close()
+        a.set_xticks(range(1, len(grupos) + 1)); a.set_xticklabels([f"{c}\n{p}" for c, p in grupos], fontsize=8)
+        a.set_ylabel("diferencia de riesgo por ventana"); a.spines[["top", "right"]].set_visible(False)
+        plt.tight_layout(); plt.savefig(fd / "efecto_hud_y_denoising.png", dpi=150); plt.close()
 
 
 def main():
@@ -220,9 +226,10 @@ def main():
     with open(sal / "resumen.txt", "w", encoding="utf-8") as f:
         f.write(met.to_string(index=False) + "\n\n" + ind.to_string(index=False) + "\n")
         if len(h):
-            f.write("\nHUD: diferencia de riesgo (con - sin), percentiles 25/50/75 por prompt\n")
-            f.write(h.groupby("prompt").dif_riesgo.quantile([.1, .25, .5, .75, .9]).unstack().round(2).to_string() + "\n")
-            f.write("ventanas con el mismo nivel (bajo/medio/alto) con y sin HUD: " + h.assign(ig=(h.riesgo_final_sin_hud >= 4).astype(int) + (h.riesgo_final_sin_hud >= 7) == (h.riesgo_final_con_hud >= 4).astype(int) + (h.riesgo_final_con_hud >= 7)).groupby("prompt").ig.mean().round(3).to_string() + "\n")
+            f.write("\nDiferencia de riesgo por ventana contra sin_hud (percentiles 10/25/50/75/90)\n")
+            f.write(h.groupby(["comparacion", "prompt"]).dif_riesgo.quantile([.1, .25, .5, .75, .9]).unstack().round(2).to_string() + "\n")
+            niv = lambda r: (r >= 4).astype(int) + (r >= 7)
+            f.write("Ventanas con el mismo nivel (bajo/medio/alto):\n" + h.assign(ig=niv(h.riesgo_final_sin_hud) == niv(h.riesgo_final_otra)).groupby(["comparacion", "prompt"]).ig.mean().round(3).to_string() + "\n")
     print(open(sal / "resumen.txt", encoding="utf-8").read())
 
 

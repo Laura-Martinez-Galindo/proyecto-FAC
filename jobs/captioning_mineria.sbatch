@@ -22,14 +22,18 @@
 #  * Ventanas de 16 s con paso de 8 s (solapadas, mejor ubicacion en el tiempo), 6 frames a 896 px
 #    (mas detalle para objetos pequenos que 8 a 640).
 #  * Verificacion: si el puntaje es >= 5, segunda mirada a 1280 px de los frames citados como evidencia.
-#  * Con HUD y sin HUD, para medir el efecto del HUD.
+#  * Tres versiones del mismo frame: original (con HUD), sin_hud y denoised (sin HUD + el modelo de
+#    denoising ganador de su regimen, aplicado al vuelo; los frames de regimenes sin modelo van sin HUD).
+#    Para usar las 2 GPUs, un job por grupo de versiones:
+#      VERSIONES=denoised sbatch jobs/captioning_mineria.sbatch
+#      VERSIONES="sin_hud original" sbatch jobs/captioning_mineria.sbatch
 #  * Se guarda una hoja de contacto por ventana (mosaicos/) para revisar a ojo que vio el modelo.
 # Analisis despues, en el PC: scripts/analizar_captioning_mineria.py (cruza cada ventana con las
 # etiquetas del dataset que caen en ella).
 # Variables: MODELO, TRAMOS ("video1:0:700 video3:100:720 video2:1980:2770"), PROMPTS ("mineria mineria_corto"),
 #   VERSIONES ("sin_hud original"), VENTANA (16) PASO (8) FRAMES (6) LADO (896) VERIFICAR (5)
 #   HUMO=1: 3 ventanas del video1 donde hay SDZI (3:28), solo sin_hud + mineria, para probar en minutos.
-# Resultado: resultados/captioning_mineria.tar (texto + hojas de contacto pequenas)
+# Resultado: resultados/captioning_mineria_<versiones>.tar (texto + hojas de contacto pequenas)
 
 set -uo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
@@ -39,14 +43,16 @@ export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 MODELO="${MODELO:-Qwen/Qwen2.5-VL-7B-Instruct}"
 TRAMOS="${TRAMOS:-video1:0:700 video3:100:720 video2:1980:2770}"
 PROMPTS="${PROMPTS:-mineria mineria_corto}"
-VERSIONES="${VERSIONES:-sin_hud original}"
+VERSIONES_PEDIDAS="${VERSIONES:-}"
+VERSIONES="${VERSIONES:-sin_hud original denoised}"
 BASE="resultados/captioning_mineria"
 EXTRA=()
 if [ "${HUMO:-0}" = "1" ]; then
-  TRAMOS="video1:200:240"; PROMPTS="mineria"; VERSIONES="sin_hud"; EXTRA+=(--max-ventanas 3)
+  TRAMOS="video1:200:240"; PROMPTS="mineria"; VERSIONES="${VERSIONES_PEDIDAS:-sin_hud}"; EXTRA+=(--max-ventanas 3)
   BASE="resultados/captioning_mineria_humo"
 fi
 nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv
+TAR="${BASE}_$(echo ${VERSIONES} | tr ' ' '-').tar"   # un tar por job (se pueden correr 2 a la vez)
 FALLOS=0
 for P in ${PROMPTS}; do
   for V in ${VERSIONES}; do
@@ -60,9 +66,9 @@ for P in ${PROMPTS}; do
           --prompt "${P}" --inicio-s "${INI}" --fin-s "${FIN}" --ventana-s "${VENTANA:-16}" --paso-s "${PASO:-8}" \
           --frames-por-ventana "${FRAMES:-6}" --lado-max "${LADO:-896}" --salida "${SAL}" "${OPC[@]}" "${EXTRA[@]}" \
         || { echo "${SAL}: FALLO"; FALLOS=$((FALLOS + 1)); }
-      tar -cf "${BASE}.tar" "${BASE}"   # se actualiza en cada tramo: sirve aunque el job no termine
+      tar -cf "${TAR}" "${BASE}"   # se actualiza en cada tramo: sirve aunque el job no termine
     done
   done
 done
-ls -lh "${BASE}.tar"
+ls -lh "${TAR}"
 echo "Terminado con ${FALLOS} fallo(s)."

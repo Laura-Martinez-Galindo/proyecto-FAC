@@ -71,14 +71,116 @@ def nivel(d: dict) -> str:
     return v if v in NIVELES else "sin_dato"
 
 
+class Limpiador:
+    """Aplica a un frame del video el modelo de denoising ganador de SU regimen (fase 2), igual que
+    en dataset_denoised: config/denoising/ganadores.json dice que experimento usar por familia y
+    videos/<video>/regimenes_<video>.csv el regimen de cada frame (lectura del HUD mas cercana).
+    Los frames de regimenes sin modelo (termico, baja luz, SWIR) se devuelven sin HUD, sin limpiar."""
+
+    def __init__(self, video: str, fuente, tile: int = 384, overlap: int = 48):
+        import numpy as np
+        import torch
+        import denoising as dn
+        from color_original import recolorear
+        self.np, self.torch, self.dn, self.recolorear = np, torch, dn, recolorear
+        self.f, self.tile, self.overlap = fuente, tile, overlap
+        self.disp = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        fams = json.loads((RAIZ / "config/denoising/familias.json").read_text(encoding="utf-8"))
+        self.fam_de = {r: f for f, rs in fams.items() for r in rs}
+        self.gan = json.loads((RAIZ / "config/denoising/ganadores.json").read_text(encoding="utf-8"))
+        lect = []
+        with (RAIZ / f"videos/{video}/regimenes_{video}.csv").open(encoding="utf-8-sig") as fh:
+            for r in csv.DictReader(fh):
+                if r.get("regimen") and r["regimen"] != "DESCONOCIDO":
+                    lect.append((int(r["frame"]), r["regimen"]))
+        lect.sort()
+        self.k_lect = np.array([k for k, _ in lect])
+        self.r_lect = [r for _, r in lect]
+        self.redes, self.conteo = {}, {}
+
+    def regimen(self, k: int) -> str:
+        i = int(self.np.searchsorted(self.k_lect, k))
+        cand = [j for j in (i - 1, i) if 0 <= j < len(self.r_lect)]
+        return self.r_lect[min(cand, key=lambda j: abs(self.k_lect[j] - k))] if cand else "DESCONOCIDO"
+
+    def _red(self, fam: str):
+        if fam not in self.redes:
+            from argparse import Namespace
+            g = self.gan[fam]
+            ruta = RAIZ / "cache/denoising" / fam / g["entrenamiento"] / "modelo.pt"
+            ck = self.torch.load(ruta, map_location=self.disp, weights_only=False)
+            conf = Namespace(**ck["args"])
+            met = self.dn.METODOS[ck["metodo"]]
+            red = met.crear(conf, int(ck["canales"])).to(self.disp)
+            red.load_state_dict(ck["modelo"], strict=True)
+            red.eval()
+            self.redes[fam] = (met, conf, int(ck["canales"]), red, g["experimento"].endswith("_ycolor"),
+                               bool(ck["args"].get("amp")))
+            print(f"denoising {fam}: {ck['metodo']} paso {ck['paso']} ({ruta})", flush=True)
+        return self.redes[fam]
+
+    def frame(self, k: int):
+        """BGR del frame k sin HUD y limpio con el modelo de su regimen; (imagen, etiqueta)."""
+        reg = self.regimen(k)
+        fam = self.fam_de.get(reg)
+        if fam is None or fam not in self.gan:
+            self.conteo[reg] = self.conteo.get(reg, 0) + 1
+            return self.f.compuesto(k, 3), f"{reg}:sin_modelo"
+        met, conf, canales, red, ycolor, amp = self._red(fam)
+        np, torch = self.np, self.torch
+        centro = self.f.compuesto(k, canales)
+        if centro is None:
+            return None, f"{reg}:sin_frame"
+        ims = [centro]
+        if met.temporal > 1:
+            ims = []
+            for d in range(-(met.temporal // 2), met.temporal // 2 + 1):
+                im = centro if d == 0 else self.f.compuesto(k + d, canales)
+                ims.append(centro if im is None or im.shape != centro.shape else im)
+        x = torch.from_numpy(np.concatenate(ims, 2).transpose(2, 0, 1).astype(np.float32) / 255.0)[None]
+        x = x.to(self.disp) * met.escala
+
+        def fn(t):
+            with torch.no_grad(), torch.autocast(self.disp.type, enabled=amp and self.disp.type == "cuda"):
+                return met.aplicar(red, t, conf)
+
+        mult = getattr(met, "multiplo_mosaico", max(met.multiplo, 32 if met.nombre not in ("apbsn", "mmbsn") else 2))
+        tile = self.tile
+        while True:
+            try:
+                y = self.dn.mosaicos(fn, x, tile, self.overlap, mult)
+                break
+            except RuntimeError as e:
+                if not self.dn.sin_memoria(e) or tile // 2 < max(mult, 64):
+                    raise
+                torch.cuda.empty_cache()
+                tile //= 2
+        out = np.rint((y[0] / met.escala).clamp(0, 1).float().cpu().numpy().transpose(1, 2, 0) * 255.0).astype(np.uint8)
+        if out.ndim == 2 or out.shape[2] == 1:
+            import cv2
+            out = cv2.cvtColor(out.reshape(out.shape[0], out.shape[1]), cv2.COLOR_GRAY2BGR)
+        if ycolor:
+            base = self.f.compuesto(k, 3)
+            if base is not None:
+                out = self.recolorear(base, out, 5, 1.5)
+        del x, y
+        if self.disp.type == "cuda":
+            torch.cuda.empty_cache()  # la GPU la comparte con el modelo de lenguaje visual
+        self.conteo[fam] = self.conteo.get(fam, 0) + 1
+        return out, f"{reg}:{self.gan[fam]['metodo']}"
+
+
 class Frames:
-    """Lee frames del video por numero. version: original (con HUD) o sin_hud (compuesto)."""
+    """Lee frames del video por numero. version: original (con HUD), sin_hud (compuesto) o
+    denoised (sin HUD + modelo de denoising de su regimen, ver Limpiador)."""
 
     def __init__(self, video: str, version: str, lado_max: int):
         sys.path.insert(0, str(RAIZ / "scripts"))
         from fac_denoise.datos import Fuente, cargar_config
         self.f = Fuente(video)
         self.version, self.lado_max = version, lado_max
+        self.limpiador = Limpiador(video, self.f) if version == "denoised" else None
+        self.etiquetas = []
         cfg = cargar_config().get(video, {})
         self.fps = float(cfg.get("extraccion", {}).get("fps") or cfg.get("metadatos", {}).get("fps_original") or 30.0)
         self.n = max(self.f.idx_orig) if self.f.idx_orig else 0
@@ -88,8 +190,12 @@ class Frames:
         import cv2
         from PIL import Image
         k = int(round(t * self.fps)) + 1
-        im = self.f.compuesto(k, 3) if self.version == "sin_hud" else self.f.original(k, 3)
-        if im is None and self.version == "sin_hud":
+        if self.limpiador is not None:
+            im, etq = self.limpiador.frame(k)
+            self.etiquetas.append(etq)
+        else:
+            im = self.f.compuesto(k, 3) if self.version == "sin_hud" else self.f.original(k, 3)
+        if im is None and self.version in ("sin_hud", "denoised"):
             im = self.f.original(k, 3)  # si falta la mascara o el relleno, se usa el original
         if im is None:
             return None
@@ -199,7 +305,7 @@ def unir_segmentos(filas: list[dict], minimo: str) -> list[dict]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--video", required=True)
-    ap.add_argument("--version", choices=["original", "sin_hud"], default="sin_hud")
+    ap.add_argument("--version", choices=["original", "sin_hud", "denoised"], default="sin_hud")
     ap.add_argument("--modelo", default="Qwen/Qwen2.5-VL-7B-Instruct")
     ap.add_argument("--prompt", default="lista", help="nombre en config/captioning/prompts.json")
     ap.add_argument("--inicio-s", type=float, default=0.0)
@@ -274,6 +380,8 @@ def main():
                 usados = tiempos
             else:
                 ims, usados = [], []
+                if frames.limpiador is not None:
+                    frames.etiquetas = []
                 for tt in tiempos:
                     im = frames.imagen(tt)
                     if im is not None:
@@ -306,6 +414,7 @@ def main():
             fila = {"video": a.video, "version": a.version, "modelo": a.modelo, "prompt": a.prompt,
                     "inicio_s": t0, "fin_s": t1, "n_frames": len(usados), "lado_max": lado,
                     "tiempos_frames": [round(x, 3) for x in usados],
+                    "denoising": list(frames.etiquetas[:len(usados)]) if (frames is not None and frames.limpiador is not None) else None,
                     "respuesta": cruda, "json": d, "riesgo_inicial": r0, "verificacion": verif, "riesgo_final": rf,
                     "interes": nivel({"riesgo_mineria": rf}) if rf is not None else nivel(d),
                     "segundos": round(time.time() - ini, 2)}
