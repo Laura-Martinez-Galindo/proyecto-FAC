@@ -46,6 +46,42 @@ def _uno(t):
     return fila
 
 
+def _ret(o, ms, b):
+    so = cv2.GaussianBlur(cv2.medianBlur(np.clip(o, 0, 255).astype(np.uint8), 5).astype(np.float32), (0, 0), 1.5)
+    mo = cv2.magnitude(cv2.Sobel(so, cv2.CV_32F, 1, 0), cv2.Sobel(so, cv2.CV_32F, 0, 1))
+    return float(np.median(mo[b]) / (np.median(ms[b]) + 1e-6))
+
+
+def _vs_gauss(t):
+    """Linea base: un desenfoque gaussiano que deja EL MISMO grano que el modelo. Si el modelo conserva
+    mas bordes que ese gaussiano, limpia mejor que desenfocar; si conserva lo mismo, se comporta como un
+    desenfoque."""
+    s = cv2.imread(t["sin_hud"], 0)
+    d = cv2.imread(t["denoised"], 0)
+    if s is None or d is None:
+        return None
+    s, d = s.astype(np.float32), d.astype(np.float32)
+    h, w = s.shape
+    m = cv2.imread(t["mascara"], cv2.IMREAD_GRAYSCALE) if os.path.exists(t["mascara"]) else None
+    hud = (cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST) > 0) if m is not None else np.zeros((h, w), bool)
+    hud = cv2.dilate(hud.astype(np.uint8), np.ones((25, 25), np.uint8)) > 0
+    sv = cv2.GaussianBlur(cv2.medianBlur(s.astype(np.uint8), 5).astype(np.float32), (0, 0), 1.5)
+    ms = cv2.magnitude(cv2.Sobel(sv, cv2.CV_32F, 1, 0), cv2.Sobel(sv, cv2.CV_32F, 0, 1))
+    b = (ms > np.quantile(ms[~hud], 0.90)) & ~hud
+    ex = b | hud
+    gr = lambda g: float((g - cv2.GaussianBlur(g, (0, 0), 2.0))[~ex].std())
+    gd = gr(d)
+    lo, hi = 0.05, 8.0
+    for _ in range(22):
+        mid = (lo + hi) / 2
+        if gr(cv2.GaussianBlur(s, (0, 0), mid)) > gd:
+            lo = mid
+        else:
+            hi = mid
+    return {"imagen": t["imagen"], "bordes_modelo": round(_ret(d, ms, b), 4), "sigma_gauss_equivalente": round(hi, 3),
+            "bordes_gauss_mismo_grano": round(_ret(cv2.GaussianBlur(s, (0, 0), hi), ms, b), 4)}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--datasets", default="datasets")
@@ -69,6 +105,18 @@ def main():
     with ProcessPoolExecutor(a.workers) as ex:
         filas = [f for f in ex.map(_uno, tareas, chunksize=8) if f is not None]
     print(len(filas), "imagenes medidas", flush=True)
+    vs = {}
+    with ProcessPoolExecutor(a.workers) as ex:
+        for r in ex.map(_vs_gauss, [{"imagen": im, "sin_hud": str(D / f"dataset_sin_hud/images/{im}"),
+                                     "denoised": str(D / f"dataset_denoised/images/{im}"),
+                                     "mascara": str(D / f"dataset_sin_hud/mascaras_hud/{im}")} for im in sorted(info)],
+                        chunksize=8):
+            if r:
+                vs[r["imagen"]] = r
+    for f in filas:
+        if f["version"] == "denoised" and f["imagen"] in vs:
+            f.update({k: v for k, v in vs[f["imagen"]].items() if k != "imagen"})
+    print("comparacion con gaussiano lista", flush=True)
     if a.iqa:
         from evaluar_denoising import iqa
         for v in VERSIONES:
