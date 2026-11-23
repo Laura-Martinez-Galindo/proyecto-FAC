@@ -16,7 +16,7 @@
 # probado con el MISMO split sobre original, sin_hud y denoised (scripts/yolo_comparar_datasets.py).
 # Antes, una vez en el login (los nodos de GPU no tienen internet):
 #   source fac_env311/bin/activate && python -c "from ultralytics import YOLO; YOLO('yolo11m.pt')"
-# Uso:  SPLIT=config/splits/<split>.csv sbatch jobs/yolo_comparar_datasets.sbatch
+# Uso:  SPLIT=config/splits/sin_fuga_93grupos.csv sbatch jobs/yolo_comparar_datasets.sbatch
 #   (CSV con columnas imagen,split usando los nombres de dataset_original; el split sin fuga de Jorge)
 # Opcional: CONFIGS="heavy_aug" DATASETS="original sin_hud denoised" EPOCAS=150 PACIENCIA=20
 

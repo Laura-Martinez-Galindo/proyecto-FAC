@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Mismo YOLO, mismo split, tres versiones del dataset: original, sin_hud y denoised.
 
+Split recomendado: config/splits/sin_fuga_93grupos.csv (el de Jorge, 93 grupos de escena sin cruces:
+777 train / 172 val / 167 test; es el mismo de Splits/03_Sin_Ruido aplicado a los mismos nombres).
+
 Configuraciones tomadas del articulo IET (Tabla A.1): las dos mejores despues de reentrenar
   heavy_aug     yolo11m  batch 64  lr0 0.01  cos_lr  wd 0.001   dropout 0.2  mosaic 1.0  mixup 0.3  640 px
                 (mejor mAP@50 general: 0.708 en la busqueda, 0.739-0.757 reentrenado)
@@ -78,6 +81,7 @@ def main():
             ds = Path("datasets") / f"dataset_{dsn}"
             nombres = yaml.safe_load((ds / "clases.yaml").read_text(encoding="utf-8"))["names"]
             nombres = [nombres[k] for k in sorted(nombres)] if isinstance(nombres, dict) else list(nombres)
+            nombres = ["maquinaria" if n == "SDZI" else n for n in nombres]  # misma clase 4 en las tres versiones
             data = armar(ds, split, Path("datasets/yolo") / nombre_split / dsn, nombres)
             run = sal / cfg / dsn
             if not (run / "train" / "weights" / "best.pt").exists():
