@@ -73,7 +73,7 @@ def main():
         split = {r["imagen"]: r["split"].strip().lower() for r in csv.DictReader(fh)}
     assert set(split.values()) <= {"train", "val", "test"}, set(split.values())
     nombre_split = Path(a.split).stem
-    sal = Path(a.salida) / nombre_split
+    sal = (Path(a.salida) / nombre_split).resolve()  # absoluta: si no, ultralytics la mete en runs/detect/
     sal.mkdir(parents=True, exist_ok=True)
     resumen = []
     for cfg in a.configs:
