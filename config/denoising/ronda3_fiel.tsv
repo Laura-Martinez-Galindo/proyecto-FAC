@@ -1,0 +1,47 @@
+# RONDA 3 FIEL: se vuelven a correr, en las MISMAS condiciones de la ronda 3 (mismas listas, 4.000 pasos,
+# hasta 300 imagenes de evaluacion por regimen, sin AMP), los metodos que la auditoria de fidelidad
+# (proyecto "Tesis": fidelidad_metodos_vs_articulos.md) encontro adaptados pero corregibles, ahora con
+# la configuracion de su articulo / repositorio oficial. Los nombres terminan en _r3f.
+#   f2f_fiel        DnCNN-S-25 preentrenada, frames completos (recorte 540x960), TV-L1, lr 5e-5, 20 it. por par
+#   n2v_fiel, n2v2_fiel, structn2v_fiel   U-Net y configuracion del ejemplo RGB de juglab/n2v
+#   noise2same_fiel U-Net residual, mascara gaussiana, parche 64, batch 64, lr 4e-4 (divelab/Noise2Same)
+#   nb2nb           parche 256, batch 4 (train.py oficial)
+#   b2u             configuracion de ruido real (train_sidd_b2u.py): parche 256, batch 4, lr 1e-4
+#   noise2score     recorte 256, batch 8, lr 2e-4 (opciones del repo oficial)
+#   udvd            lr 1e-3, batch 8 (raw_train.py, ruido real)
+#   r2r             50 muestras al inferir (oficial)
+#   s2splus         500 mascaras al inferir (oficial); zero-shot, mismas 30 imagenes que en la ronda 3
+# experimento	familia	metodo	recurso	argumentos
+f2f_fiel_r3f	HDEO_DDE_HAZE	f2f_fiel	gpu	
+f2f_fiel_r3f	HDEO_HAZE	f2f_fiel	gpu	
+f2f_fiel_r3f	HDEO_DDE	f2f_fiel	gpu	
+n2v_fiel_r3f	HDEO_DDE_HAZE	n2v_fiel	gpu	
+n2v_fiel_r3f	HDEO_HAZE	n2v_fiel	gpu	
+n2v_fiel_r3f	HDEO_DDE	n2v_fiel	gpu	
+n2v2_fiel_r3f	HDEO_DDE_HAZE	n2v2_fiel	gpu	
+n2v2_fiel_r3f	HDEO_HAZE	n2v2_fiel	gpu	
+n2v2_fiel_r3f	HDEO_DDE	n2v2_fiel	gpu	
+structn2v_fiel_r3f	HDEO_DDE_HAZE	structn2v_fiel	gpu	
+structn2v_fiel_r3f	HDEO_HAZE	structn2v_fiel	gpu	
+structn2v_fiel_r3f	HDEO_DDE	structn2v_fiel	gpu	
+noise2same_fiel_r3f	HDEO_DDE_HAZE	noise2same_fiel	gpu	
+noise2same_fiel_r3f	HDEO_HAZE	noise2same_fiel	gpu	
+noise2same_fiel_r3f	HDEO_DDE	noise2same_fiel	gpu	
+nb2nb_r3f	HDEO_DDE_HAZE	nb2nb	gpu	--parche 256 --batch 4
+nb2nb_r3f	HDEO_HAZE	nb2nb	gpu	--parche 256 --batch 4
+nb2nb_r3f	HDEO_DDE	nb2nb	gpu	--parche 256 --batch 4
+b2u_r3f	HDEO_DDE_HAZE	b2u	gpu	--parche 256 --batch 4 --lr 1e-4
+b2u_r3f	HDEO_HAZE	b2u	gpu	--parche 256 --batch 4 --lr 1e-4
+b2u_r3f	HDEO_DDE	b2u	gpu	--parche 256 --batch 4 --lr 1e-4
+noise2score_r3f	HDEO_DDE_HAZE	noise2score	gpu	--parche 256 --batch 8 --lr 2e-4
+noise2score_r3f	HDEO_HAZE	noise2score	gpu	--parche 256 --batch 8 --lr 2e-4
+noise2score_r3f	HDEO_DDE	noise2score	gpu	--parche 256 --batch 8 --lr 2e-4
+udvd_r3f	HDEO_DDE_HAZE	udvd	gpu	--batch 8 --lr 1e-3
+udvd_r3f	HDEO_HAZE	udvd	gpu	--batch 8 --lr 1e-3
+udvd_r3f	HDEO_DDE	udvd	gpu	--batch 8 --lr 1e-3
+r2r_r3f	HDEO_DDE_HAZE	r2r	gpu	--r2r-t 50
+r2r_r3f	HDEO_HAZE	r2r	gpu	--r2r-t 50
+r2r_r3f	HDEO_DDE	r2r	gpu	--r2r-t 50
+s2splus_r3f	HDEO_DDE_HAZE	s2splus	zs	--max-imagenes 30 --s2sp-muestras 500
+s2splus_r3f	HDEO_HAZE	s2splus	zs	--max-imagenes 30 --s2sp-muestras 500
+s2splus_r3f	HDEO_DDE	s2splus	zs	--max-imagenes 30 --s2sp-muestras 500

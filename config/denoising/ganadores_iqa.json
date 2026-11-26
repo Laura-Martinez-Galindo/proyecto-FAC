@@ -1,0 +1,5 @@
+{
+  "HDEO_DDE_HAZE": {"metodo": "ZS-N2N", "experimento": "zsn2n_f2iqa_ycolor", "entrenamiento": "zsn2n_f2iqa"},
+  "HDEO_HAZE":     {"metodo": "ZS-KAN", "experimento": "zskan_f2iqa_ycolor", "entrenamiento": "zskan_f2iqa"},
+  "HDEO_DDE":      {"metodo": "ZS-KAN", "experimento": "zskan_f2iqa_ycolor", "entrenamiento": "zskan_f2iqa"}
+}

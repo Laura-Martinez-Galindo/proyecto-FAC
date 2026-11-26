@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor de resultados · Videos FLIR</title>
+<style>
+  :root { --verde:#395749; --claro:#e1ebe8; --texto:#1f2d27; --gris:#6b7a73; --borde:#cfd8d4; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--texto); background:#f6f8f7; }
+  header { background:var(--verde); color:#fff; padding:10px 18px; display:flex; align-items:center; gap:24px; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  nav button { background:none; border:0; color:#d6e4de; font:inherit; padding:6px 10px; cursor:pointer; border-bottom:2px solid transparent; }
+  nav button.activo { color:#fff; border-bottom-color:#fff; }
+  .seccion { display:none; }
+  .seccion.activa { display:grid; grid-template-columns: 250px 1fr; min-height: calc(100vh - 48px); }
+  aside { border-right:1px solid var(--borde); background:#fff; padding:12px; overflow:auto; max-height: calc(100vh - 48px); }
+  aside h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--gris); margin:14px 0 6px; }
+  aside label { display:block; margin:4px 0; }
+  aside select, aside input[type=range] { width:100%; }
+  .lista { list-style:none; padding:0; margin:0; }
+  .lista li { padding:4px 6px; cursor:pointer; border-radius:4px; font-variant-numeric: tabular-nums; font-size:13px; }
+  .lista li:hover { background:var(--claro); }
+  .lista li.sel { background:var(--verde); color:#fff; }
+  main { padding:12px 16px; overflow:auto; }
+  .barra { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:10px; color:var(--gris); }
+  .paneles { display:grid; gap:8px; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+  .panel { background:#fff; border:1px solid var(--borde); }
+  .panel .tit { padding:5px 8px; font-weight:600; font-size:13px; border-bottom:1px solid var(--borde); display:flex; justify-content:space-between; }
+  .panel .tit span { font-weight:400; color:var(--gris); }
+  canvas { display:block; width:100%; height:auto; cursor:grab; background:#111; }
+  canvas:active { cursor:grabbing; }
+  table { border-collapse:collapse; margin:8px 0 16px; font-variant-numeric: tabular-nums; }
+  th, td { border-bottom:1px solid var(--borde); padding:4px 10px; text-align:right; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--gris); font-weight:600; }
+  .leyenda span { margin-right:14px; }
+  .caja { display:inline-block; width:12px; height:12px; vertical-align:-2px; margin-right:4px; border:2px solid; }
+  .tarjeta { background:#fff; border:1px solid var(--borde); margin-bottom:12px; display:grid; grid-template-columns: minmax(300px, 46%) 1fr; }
+  .tarjeta img { width:100%; display:block; }
+  .tarjeta .txt { padding:10px 14px; }
+  .tarjeta .meta { color:var(--gris); font-size:12px; }
+  .riesgo { font-size:22px; font-weight:700; }
+  .chip { display:inline-block; border:1px solid var(--borde); border-radius:10px; padding:0 8px; margin:2px 4px 2px 0; font-size:12px; }
+  .chip.mq { border-color:#b7472a; color:#b7472a; }
+  .nota { color:var(--gris); font-size:12px; }
+  .vacio { padding:40px; color:var(--gris); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Videos FLIR · visor de resultados</h1>
+  <nav>
+    <button data-s="limpieza" class="activo">Limpieza por régimen</button>
+    <button data-s="deteccion">Detección YOLO</button>
+    <button data-s="captioning">Captioning</button>
+  </nav>
+</header>
+
+<section id="limpieza" class="seccion activa">
+  <aside>
+    <h2>Régimen</h2>
+    <select id="l-reg"></select>
+    <p class="nota" id="l-info"></p>
+    <h2>Mostrar</h2>
+    <label><input type="checkbox" id="l-cajas"> Anotaciones del dataset</label>
+    <label><input type="checkbox" id="l-fin" checked> Finalistas de la fase 2</label>
+    <h2>Imágenes</h2>
+    <ul class="lista" id="l-lista"></ul>
+  </aside>
+  <main>
+    <div class="barra"><span>Rueda del mouse: zoom · arrastrar: mover · doble clic: volver a ajustar. Todos los paneles se mueven juntos.</span></div>
+    <div class="paneles" id="l-paneles"></div>
+  </main>
+</section>
+
+<section id="deteccion" class="seccion">
+  <aside>
+    <h2>Configuración YOLO</h2>
+    <select id="d-cfg"></select>
+    <h2>Mostrar</h2>
+    <label><input type="checkbox" id="d-gt" checked> Cajas reales (anotación)</label>
+    <label><input type="checkbox" id="d-pr" checked> Cajas predichas</label>
+    <label>Confianza mínima: <b id="d-conf-v">0,25</b><input type="range" id="d-conf" min="0.05" max="0.9" step="0.05" value="0.25"></label>
+    <label>Clase: <select id="d-clase"><option value="-1">todas</option></select></label>
+    <h2>Imágenes de test</h2>
+    <ul class="lista" id="d-lista"></ul>
+  </aside>
+  <main>
+    <div class="barra leyenda">
+      <span><i class="caja" style="border-color:#2e9e5b"></i>acierto (IoU ≥ 0,5)</span>
+      <span><i class="caja" style="border-color:#d1432f"></i>falsa alarma</span>
+      <span><i class="caja" style="border-color:#f2c230;border-style:dashed"></i>objeto no detectado</span>
+      <span><i class="caja" style="border-color:#ffffff;background:#555"></i>anotación</span>
+    </div>
+    <div class="paneles" id="d-paneles"></div>
+    <h3>Métricas en todo el test</h3>
+    <div id="d-tabla"></div>
+  </main>
+</section>
+
+<section id="captioning" class="seccion">
+  <aside>
+    <h2>Filtrar</h2>
+    <label>Video <select id="c-video"></select></label>
+    <label>Versión <select id="c-version"></select></label>
+    <label>Prompt <select id="c-prompt"></select></label>
+    <label><input type="checkbox" id="c-mq"> Solo ventanas con maquinaria anotada</label>
+    <p class="nota" id="c-info"></p>
+  </aside>
+  <main id="c-main"></main>
+</section>
+
+<script src="datos.js"></script>
+<script>
+const D = window.DATOS || {};
+const CLASES = D.clases || [];
+const COL_CLASE = ["#5aa0e6", "#e6a85a", "#c77de0", "#ff5c5c", "#47d1c4"];
+const fmt = (x, n = 2) => (x == null || isNaN(x)) ? "–" : Number(x).toFixed(n).replace(".", ",");
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("activo", x === b));
+  document.querySelectorAll(".seccion").forEach(s => s.classList.toggle("activa", s.id === b.dataset.s));
+  if (b.dataset.s !== "captioning") (b.dataset.s === "limpieza" ? L : DT).dibujar();
+});
+
+/* ---------- vista sincronizada (zoom y paneo compartidos) ---------- */
+function Vista(cont, alRedibujar) {
+  this.cont = cont; this.s = 1; this.x = 0; this.y = 0; this.paneles = []; this.redibujar = alRedibujar;
+}
+Vista.prototype.armar = function (items) {
+  this.cont.innerHTML = ""; this.paneles = [];
+  items.forEach(it => {
+    const p = document.createElement("div"); p.className = "panel";
+    p.innerHTML = `<div class="tit">${it.nombre}<span>${it.extra || ""}</span></div>`;
+    const c = document.createElement("canvas"); p.appendChild(c); this.cont.appendChild(p);
+    const img = new Image(); const panel = { c, img, it };
+    img.onload = () => { if (!this.ajustado) this.ajustar(); this.dibujar(); };
+    img.src = it.src; this.paneles.push(panel); this.eventos(c);
+  });
+  this.ajustado = false;
+};
+Vista.prototype.ajustar = function () {
+  const p = this.paneles.find(q => q.img.naturalWidth); if (!p) return;
+  this.s = 1; this.x = 0; this.y = 0; this.ajustado = true;
+};
+Vista.prototype.dibujar = function () {
+  this.paneles.forEach(p => {
+    const im = p.img; if (!im.naturalWidth) return;
+    const W = p.c.clientWidth || 600, H = Math.round(W * im.naturalHeight / im.naturalWidth);
+    const dpr = window.devicePixelRatio || 1;
+    if (p.c.width !== Math.round(W * dpr)) { p.c.width = Math.round(W * dpr); p.c.height = Math.round(H * dpr); }
+    const ctx = p.c.getContext("2d");
+    const base = p.c.width / im.naturalWidth;
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "#111"; ctx.fillRect(0, 0, p.c.width, p.c.height);
+    const k = base * this.s;
+    ctx.setTransform(k, 0, 0, k, this.x * dpr, this.y * dpr);
+    ctx.imageSmoothingEnabled = this.s < 3;
+    ctx.drawImage(im, 0, 0);
+    this.redibujar && this.redibujar(ctx, p, k, im);
+  });
+};
+Vista.prototype.eventos = function (c) {
+  c.addEventListener("wheel", e => {
+    e.preventDefault();
+    const r = c.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const f = e.deltaY < 0 ? 1.25 : 0.8, ns = Math.min(40, Math.max(1, this.s * f)), g = ns / this.s;
+    this.x = mx - (mx - this.x) * g; this.y = my - (my - this.y) * g; this.s = ns;
+    if (ns === 1) { this.x = 0; this.y = 0; }
+    this.dibujar();
+  }, { passive: false });
+  let arr = null;
+  c.addEventListener("mousedown", e => { arr = [e.clientX - this.x, e.clientY - this.y]; });
+  window.addEventListener("mouseup", () => arr = null);
+  window.addEventListener("mousemove", e => { if (!arr) return; this.x = e.clientX - arr[0]; this.y = e.clientY - arr[1]; this.dibujar(); });
+  c.addEventListener("dblclick", () => { this.s = 1; this.x = 0; this.y = 0; this.dibujar(); });
+};
+window.addEventListener("resize", () => { L.vista.dibujar(); DT.vista.dibujar(); });
+
+function cajaYolo(ctx, b, im, k, color, punteado) {
+  const [c, xc, yc, w, h] = b, W = im.naturalWidth, H = im.naturalHeight;
+  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2.5 / k; if (punteado) ctx.setLineDash([8 / k, 6 / k]);
+  ctx.strokeRect((xc - w / 2) * W, (yc - h / 2) * H, w * W, h * H); ctx.restore();
+}
+function etiqueta(ctx, txt, x, y, k, color) {
+  ctx.save(); ctx.font = `${12 / k}px system-ui`; const w = ctx.measureText(txt).width + 6 / k;
+  ctx.fillStyle = color; ctx.fillRect(x, y - 15 / k, w, 15 / k); ctx.fillStyle = "#000"; ctx.fillText(txt, x + 3 / k, y - 3 / k); ctx.restore();
+}
+
+/* ---------- 1. limpieza ---------- */
+const L = { datos: D.limpieza || [], reg: 0, img: 0 };
+L.vista = new Vista(document.getElementById("l-paneles"), (ctx, p, k, im) => {
+  if (!document.getElementById("l-cajas").checked) return;
+  (p.it.cajas || []).forEach(b => {
+    const col = COL_CLASE[b[0] % COL_CLASE.length]; cajaYolo(ctx, b, im, k, col);
+    etiqueta(ctx, CLASES[b[0]] || b[0], (b[1] - b[3] / 2) * im.naturalWidth, (b[2] - b[4] / 2) * im.naturalHeight, k, col);
+  });
+});
+L.iniciar = function () {
+  const sel = document.getElementById("l-reg");
+  if (!this.datos || !this.datos.length) { document.getElementById("l-paneles").innerHTML = '<p class="vacio">No hay datos de limpieza.</p>'; return; }
+  sel.innerHTML = this.datos.map((r, i) => `<option value="${i}">Régimen ${r.regimen} · ${r.metodo}</option>`).join("");
+  sel.onchange = () => { this.reg = +sel.value; this.img = 0; this.lista(); this.mostrar(); };
+  document.getElementById("l-cajas").onchange = () => this.vista.dibujar();
+  document.getElementById("l-fin").onchange = () => this.mostrar();
+  this.lista(); this.mostrar();
+};
+L.lista = function () {
+  const r = this.datos[this.reg];
+  document.getElementById("l-info").textContent = `${r.imagenes.length} de ${r.n_total} imágenes del régimen (repartidas en orden).`;
+  const ul = document.getElementById("l-lista");
+  ul.innerHTML = r.imagenes.map((m, i) => `<li data-i="${i}">${m.video} · frame ${m.frame}</li>`).join("");
+  ul.querySelectorAll("li").forEach(li => li.onclick = () => { this.img = +li.dataset.i; this.mostrar(); });
+};
+L.mostrar = function () {
+  const r = this.datos[this.reg], m = r.imagenes[this.img]; if (!m) return;
+  document.querySelectorAll("#l-lista li").forEach((li, i) => li.classList.toggle("sel", i === this.img));
+  const fin = document.getElementById("l-fin").checked;
+  this.vista.armar(m.versiones.filter(v => fin || !v.nombre.startsWith("Finalista")).map(v => ({ ...v, cajas: m.cajas })));
+};
+L.dibujar = function () { this.vista.dibujar(); };
+
+/* ---------- 2. detección ---------- */
+const DT = { datos: D.deteccion, img: 0 };
+function iou(a, b) {
+  const x1 = Math.max(a[0], b[0]), y1 = Math.max(a[1], b[1]), x2 = Math.min(a[0] + a[2], b[0] + b[2]), y2 = Math.min(a[1] + a[3], b[1] + b[3]);
+  const i = Math.max(0, x2 - x1) * Math.max(0, y2 - y1); return i / (a[2] * a[3] + b[2] * b[3] - i + 1e-9);
+}
+DT.emparejar = function (m, preds) {
+  const [W, H] = m.wh, conf = +document.getElementById("d-conf").value, cl = +document.getElementById("d-clase").value;
+  const gt = m.cajas.filter(b => cl < 0 || b[0] === cl).map(b => ({ c: b[0], r: [(b[1] - b[3] / 2) * W, (b[2] - b[4] / 2) * H, b[3] * W, b[4] * H], ok: false }));
+  const pr = (preds || []).filter(p => p[5] >= conf && (cl < 0 || p[0] === cl)).sort((a, b) => b[5] - a[5]).map(p => ({ c: p[0], r: p.slice(1, 5), s: p[5], ok: false }));
+  pr.forEach(p => {
+    let mej = null, mv = 0.5;
+    gt.forEach(g => { if (!g.ok && g.c === p.c) { const v = iou(p.r, g.r); if (v >= mv) { mv = v; mej = g; } } });
+    if (mej) { mej.ok = true; p.ok = true; }
+  });
+  return { gt, pr };
+};
+DT.vista = new Vista(document.getElementById("d-paneles"), (ctx, p, k, im) => {
+  const m = DT.datos.imagenes[DT.img], cfg = document.getElementById("d-cfg").value;
+  const f = im.naturalWidth / m.wh[0]; ctx.save(); ctx.scale(f, f); const kk = k * f;
+  const { gt, pr } = DT.emparejar(m, p.it.pred[cfg]);
+  const verGT = document.getElementById("d-gt").checked, verPR = document.getElementById("d-pr").checked;
+  if (verGT) gt.forEach(g => { ctx.save(); ctx.strokeStyle = g.ok ? "#ffffff" : "#f2c230"; ctx.lineWidth = 2.5 / kk; if (!g.ok) ctx.setLineDash([8 / kk, 6 / kk]); ctx.strokeRect(...g.r); ctx.restore(); });
+  if (verPR) pr.forEach(q => { ctx.save(); ctx.strokeStyle = q.ok ? "#2e9e5b" : "#d1432f"; ctx.lineWidth = 2.5 / kk; ctx.strokeRect(...q.r); ctx.restore();
+    etiqueta(ctx, `${CLASES[q.c] || q.c} ${fmt(q.s)}`, q.r[0], q.r[1], kk, q.ok ? "#7fd39f" : "#f19a8d"); });
+  ctx.restore();
+});
+DT.iniciar = function () {
+  const d = this.datos;
+  if (!d || !d.imagenes || !d.imagenes.length) { document.getElementById("d-paneles").innerHTML = '<p class="vacio">No hay datos de detección.</p>'; return; }
+  document.getElementById("d-cfg").innerHTML = d.configs.map(c => `<option>${c}</option>`).join("");
+  document.getElementById("d-clase").innerHTML += CLASES.map((c, i) => `<option value="${i}">${c}</option>`).join("");
+  ["d-cfg", "d-gt", "d-pr", "d-clase"].forEach(id => document.getElementById(id).onchange = () => { this.titulos(); this.vista.dibujar(); this.tabla(); });
+  document.getElementById("d-conf").oninput = e => { document.getElementById("d-conf-v").textContent = fmt(e.target.value); this.titulos(); this.vista.dibujar(); };
+  const ul = document.getElementById("d-lista");
+  ul.innerHTML = d.imagenes.map((m, i) => `<li data-i="${i}">${m.id} <span class="nota">(${m.cajas.length})</span></li>`).join("");
+  ul.querySelectorAll("li").forEach(li => li.onclick = () => { this.img = +li.dataset.i; this.mostrar(); });
+  this.mostrar(); this.tabla();
+};
+DT.mostrar = function () {
+  document.querySelectorAll("#d-lista li").forEach((li, i) => li.classList.toggle("sel", i === this.img));
+  this.vista.armar(this.datos.imagenes[this.img].versiones); this.titulos();
+};
+DT.titulos = function () {
+  const m = this.datos.imagenes[this.img], cfg = document.getElementById("d-cfg").value;
+  this.vista.paneles.forEach(p => {
+    const { gt, pr } = this.emparejar(m, p.it.pred[cfg]);
+    const tp = pr.filter(q => q.ok).length;
+    p.c.previousSibling.querySelector("span").textContent = `${tp} de ${gt.length} encontrados · ${pr.length - tp} ${pr.length - tp === 1 ? 'falsa alarma' : 'falsas alarmas'}`;
+  });
+};
+DT.tabla = function () {
+  const cfg = document.getElementById("d-cfg").value, filas = (this.datos.resumen || []).filter(r => r.config === cfg);
+  if (!filas.length) { document.getElementById("d-tabla").innerHTML = '<p class="nota">Sin resumen.csv</p>'; return; }
+  const ds = ["original", "sin_hud", "denoised"], nom = { original: "Original", sin_hud: "Sin HUD", denoised: "Sin ruido" };
+  const clases = [...new Set(filas.map(r => r.clase))];
+  let h = `<table><tr><th>Clase</th>${ds.map(x => `<th colspan="2">${nom[x]}</th>`).join("")}</tr><tr><th></th>${ds.map(() => "<th>recall</th><th>mAP@50</th>").join("")}</tr>`;
+  clases.forEach(c => { h += `<tr><td>${c}</td>` + ds.map(x => { const r = filas.find(f => f.clase === c && f.dataset === x) || {}; return `<td>${fmt(r.recall)}</td><td>${fmt(r.map50)}</td>`; }).join("") + "</tr>"; });
+  document.getElementById("d-tabla").innerHTML = h + "</table><p class='nota'>Una sola corrida, 167 imágenes de test. Las cajas de arriba usan la confianza elegida; las métricas de la tabla integran todos los umbrales.</p>";
+};
+DT.dibujar = function () { this.vista.dibujar(); };
+
+/* ---------- 3. captioning ---------- */
+const C = { datos: D.captioning || [] };
+C.iniciar = function () {
+  if (!this.datos.length) { document.getElementById("c-main").innerHTML = '<p class="vacio">No hay ventanas de captioning.</p>'; return; }
+  const opc = (id, k) => { const v = [...new Set(this.datos.map(x => x[k]))].sort();
+    document.getElementById(id).innerHTML = v.map(x => `<option>${x}</option>`).join(""); document.getElementById(id).onchange = () => this.mostrar(); };
+  opc("c-video", "video"); opc("c-version", "version"); opc("c-prompt", "prompt");
+  document.getElementById("c-version").value = [...document.getElementById("c-version").options].some(o => o.value === "sin_hud") ? "sin_hud" : document.getElementById("c-version").value;
+  document.getElementById("c-mq").onchange = () => this.mostrar();
+  this.mostrar();
+};
+C.mostrar = function () {
+  const v = document.getElementById("c-video").value, ve = document.getElementById("c-version").value, p = document.getElementById("c-prompt").value, mq = document.getElementById("c-mq").checked;
+  const xs = this.datos.filter(x => x.video === v && x.version === ve && x.prompt === p && (!mq || x.clases_anotadas.includes("maquinaria"))).sort((a, b) => a.ini - b.ini);
+  document.getElementById("c-info").textContent = `${xs.length} ventanas`;
+  const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  document.getElementById("c-main").innerHTML = xs.map(x => `
+    <div class="tarjeta">
+      ${x.mosaico ? `<img loading="lazy" src="${x.mosaico}" alt="frames que vio el modelo">` : "<div class='vacio'>sin hoja de contacto</div>"}
+      <div class="txt">
+        <div class="meta">${x.video} · ${mmss(x.ini)}–${mmss(x.fin)} · ${x.modelo} · prompt ${x.prompt} · ${x.version}</div>
+        <div class="riesgo">riesgo ${x.riesgo_final ?? "–"}/10 ${x.riesgo_inicial != null && x.riesgo_inicial !== x.riesgo_final ? `<span class="nota">(antes de verificar: ${x.riesgo_inicial})</span>` : ""}</div>
+        <p><b>${x.escena || ""}</b> ${x.descripcion || ""}</p>
+        ${x.justificacion ? `<p class="nota">${x.justificacion}</p>` : ""}
+        <div>${Object.entries(x.indicadores || {}).map(([k, s]) => `<span class="chip">${k.replace(/_/g, " ")}${s === "incierto" ? " ?" : ""}</span>`).join("")}</div>
+        <p class="nota">Anotado en esta ventana: ${x.n_imagenes_anotadas ? x.clases_anotadas.map(c => `<span class="chip ${c === "maquinaria" ? "mq" : ""}">${c}</span>`).join("") : "ninguna imagen del dataset cae aquí"}</p>
+      </div>
+    </div>`).join("");
+};
+
+L.iniciar(); DT.iniciar(); C.iniciar();
+</script>
+</body>
+</html>

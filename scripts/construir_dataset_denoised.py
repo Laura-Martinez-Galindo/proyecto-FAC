@@ -42,6 +42,8 @@ def main():
     ap.add_argument("--ganadores", default="config/denoising/ganadores.json")
     ap.add_argument("--cache", default="cache/denoising")
     ap.add_argument("--salida", default="datasets/dataset_denoised")
+    ap.add_argument("--carpeta-salidas", default="salidas",
+                    help="subcarpeta de cada experimento con las imagenes limpias (salidas_con_hud = limpiadas con HUD)")
     ap.add_argument("--forzar", action="store_true", help="borra la salida si ya existe")
     a = ap.parse_args()
 
@@ -80,7 +82,7 @@ def main():
         src_sh = sh / "images" / im
         if im in asign:
             fam, reg = asign[im]
-            src = Path(a.cache) / fam / gan[fam]["experimento"] / "salidas" / im
+            src = Path(a.cache) / fam / gan[fam]["experimento"] / a.carpeta_salidas / im
             if not src.exists():
                 faltan.append(dict(imagen=im, familia=fam, esperado=str(src)))
                 continue

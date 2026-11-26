@@ -53,6 +53,7 @@ from fac_denoise.metodos import METODOS, argumentos_todos  # noqa: E402
 import fac_denoise.metodos_tanda2  # noqa: E402,F401  (registra los metodos de la tanda 2)
 import fac_denoise.metodos_tanda3  # noqa: E402,F401  (temporales)
 import fac_denoise.metodos_tanda4  # noqa: E402,F401  (tanda 4)
+import fac_denoise.metodos_fiel  # noqa: E402,F401  (versiones fieles a su articulo: *_fiel)
 
 import cv2  # noqa: E402
 
@@ -197,6 +198,9 @@ def cmd_entrenar(a):
               f"entrenamiento) | {len(muestras)} frames de entrenamiento | validar cada {a.validar_cada} pasos, "
               f"paciencia {a.paciencia}, minimo {a.min_pasos} pasos")
 
+    if hasattr(met, "entrenar_propio"):  # bucle propio del repo oficial (f2f_fiel: pares de frames completos)
+        met.entrenar_propio(a, fuentes, muestras, disp)
+        return
     red = met.crear(a, a.canales).to(disp)
     if disp.type == "cuda":  # si el batch no cabe en la GPU, se reduce a la mitad (queda registrado)
         a.batch_pedido = a.batch
@@ -211,6 +215,9 @@ def cmd_entrenar(a):
                 del x
                 torch.cuda.empty_cache()
                 print(f"memoria GPU usada en la prueba: {torch.cuda.max_memory_allocated() / 2**30:.1f} GB")
+                for mod in red.modules():  # la prueba usa ruido al azar: no debe fijar la normalizacion (n2v_fiel)
+                    if hasattr(mod, "listo"):
+                        mod.listo.fill_(0)
                 break
             except RuntimeError as e:
                 if not sin_memoria(e):
@@ -381,7 +388,8 @@ def cmd_inferir(a):
                     fuentes[v] = Fuente(v)
                 ims = []
                 for d in range(-(met.temporal // 2), met.temporal // 2 + 1):
-                    im = centro if d == 0 else fuentes[v].compuesto(k + d, canales)
+                    im = centro if d == 0 else (fuentes[v].original(k + d, canales) if getattr(a, "vecinos", "compuesto") == "original"
+                                                      else fuentes[v].compuesto(k + d, canales))
                     if im is None or im.shape != centro.shape:
                         im, vecinos_faltantes = centro, vecinos_faltantes + 1
                     ims.append(im)
@@ -486,6 +494,8 @@ def main():
     i.add_argument("--salida", required=True)
     i.add_argument("--canales", type=int, default=3, choices=[1, 3], help="solo metodos clasicos")
     i.add_argument("--max-imagenes", type=int, default=0)
+    i.add_argument("--vecinos", choices=["compuesto", "original"], default="compuesto",
+                   help="metodos temporales: vecinos sin HUD (compuesto, como el dataset) u originales con HUD")
     i.add_argument("--tile", type=int, default=512)
     i.add_argument("--overlap", type=int, default=48)
     i.add_argument("--residuo", action="store_true", help="guardar tambien ruidoso - limpio (x4)")

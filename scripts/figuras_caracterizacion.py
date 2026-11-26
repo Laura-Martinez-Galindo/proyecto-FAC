@@ -8,6 +8,7 @@ HUD estables) y en cada uno, FUERA del HUD, se mide:
   residuo           histograma de (gris - gris suavizado) en zonas planas: la forma del ruido.
                     Campana angosta = poco ruido; campana ancha = mucho; colas largas = impulsos
                     (sal y pimienta)
+  hud_pct           % del frame que cubre la mascara del HUD (sobre los frames del video, no del dataset)
   sigma_immerkaer   nivel de ruido por frame (DN 0-255)
   impulsos_pct      % de pixeles que se alejan >30 de su mediana 3x3 (sal y pimienta)
   niqe, brisque     calidad sin referencia (pyiqa), sobre el frame completo (menor = mejor)
@@ -42,25 +43,28 @@ BINS_RES = np.arange(-40.5, 41.5, 1.0)
 
 
 def mascara_valida(img, ruta_mask, margen=12):
+    """Devuelve (pixeles validos para medir ruido, % del frame que es HUD segun la mascara)."""
     h, w = img.shape[:2]
     if ruta_mask and os.path.exists(ruta_mask):
         m = cv2.resize(cv2.imread(ruta_mask, cv2.IMREAD_GRAYSCALE), (w, h), interpolation=cv2.INTER_NEAREST) > 0
+        hud_pct = float(100 * m.mean())
     else:
         m = np.zeros((h, w), bool)
         m[int(h * 0.60):int(h * 0.97), 0:int(w * 0.16)] = True
+        hud_pct = float("nan")
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     verde = cv2.inRange(hsv, (40, 150, 150), (85, 255, 255)) > 0
     m = m | (cv2.dilate(verde.astype(np.uint8), np.ones((19, 19), np.uint8)) > 0)
     m = cv2.dilate(m.astype(np.uint8), np.ones((2 * margen + 1, 2 * margen + 1), np.uint8)) > 0
     m[:8], m[-8:], m[:, :8], m[:, -8:] = True, True, True, True
-    return ~m
+    return ~m, hud_pct
 
 
 def medir(t):
     img = cv2.imread(t["ruta"], cv2.IMREAD_COLOR)
     if img is None:
         return None
-    valido = mascara_valida(img, t["mascara"])
+    valido, hud_pct = mascara_valida(img, t["mascara"])
     g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
     suave = cv2.GaussianBlur(g, (0, 0), 1.5)
     mag = cv2.magnitude(cv2.Sobel(suave, cv2.CV_32F, 1, 0), cv2.Sobel(suave, cv2.CV_32F, 0, 1))
@@ -71,7 +75,7 @@ def medir(t):
     dif = np.abs(g - cv2.cvtColor(cv2.medianBlur(img, 3), cv2.COLOR_BGR2GRAY).astype(np.float32))
     fila = {"video": t["video"], "frame": t["frame"], "regimen": t["regimen"],
             "sigma_immerkaer": sigma_immerkaer(g, (mag > np.quantile(mag[valido], 0.90)) | ~valido),
-            "impulsos_pct": float(100 * (dif[plano] > 30).mean())}
+            "impulsos_pct": float(100 * (dif[plano] > 30).mean()), "hud_pct": hud_pct}
     return fila, h_int / h_int.sum(), h_res / max(h_res.sum(), 1)
 
 
@@ -166,7 +170,7 @@ def main():
             h_res.setdefault(fila["video"], []).append(hr)
     if not a.sin_iqa:
         iqa(filas, rutas)
-    mets = ["sigma_immerkaer", "impulsos_pct", "niqe", "brisque"]
+    mets = ["hud_pct", "sigma_immerkaer", "impulsos_pct", "niqe", "brisque"]
     with open(sal / "por_frame.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=["video", "frame", "regimen"] + mets, extrasaction="ignore")
         w.writeheader(); w.writerows(filas)
@@ -213,6 +217,11 @@ def main():
 
     def datos(m):
         return {v: [r.get(m, np.nan) for r in filas if r["video"] == v] for v in videos}
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    violin(ax, datos("hud_pct"), videos, "% del frame cubierto por el HUD", rng)
+    ax.set_title("HUD por frame (máscara)", fontsize=14)
+    fig.tight_layout(); fig.savefig(sal / "hud_pct.png", dpi=200); plt.close(fig)
 
     fig, axs = plt.subplots(1, 2, figsize=(11, 5))
     violin(axs[0], datos("sigma_immerkaer"), videos, "σ del ruido (niveles de gris)", rng)

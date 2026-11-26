@@ -1,0 +1,14 @@
+# FASE 2 alternativa ("por NIQE"): en cada regimen, el metodo con MEJOR NIQE en la ronda 3 (columna
+# "Mejor por NIQE" de la diapositiva de criterios). Mismas condiciones que la fase 2 por grano.
+#   HDEO_DDE_HAZE (A) ZS-N2N  NIQE 4,45 (+2 %)  BRISQUE +14 %  grano 20,5 (casi no limpia)  bordes 0,99
+#   HDEO_HAZE     (B) ZS-KAN  NIQE 4,38 (+34 %) BRISQUE +85 %  grano 6,2 (deja MAS grano)  bordes 0,94
+#   HDEO_DDE      (C) ZS-KAN  NIQE 4,46 (+22 %) BRISQUE +75 %  grano 7,5                    bordes 0,92
+# (+ = mejora). B y C cumplen la meta del 8 % en NIQE y BRISQUE; A no (ningun metodo baja NIQE 8 % en A).
+# ZS-N2N (recurso gpu): se entrena con TODOS los frames del regimen, 12.000 pasos, y limpia las 823 imagenes.
+# ZS-KAN (recurso zs, zero-shot): entrena una red NUEVA por cada imagen, solo con esa imagen; no usa los
+# frames del video. Se aplica a TODAS las imagenes del dataset de su regimen (97 y 162), sin --max-imagenes.
+# La evaluacion crea las versiones _ycolor (color de la entrada); esas son las que se usan (delta E < 2,5).
+# Columnas: experimento, familia(regimen), metodo, recurso, argumentos
+zsn2n_f2iqa	HDEO_DDE_HAZE	zsn2n	gpu	
+zskan_f2iqa	HDEO_HAZE	zskan	zs	
+zskan_f2iqa	HDEO_DDE	zskan	zs	

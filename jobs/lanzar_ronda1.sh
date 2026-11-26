@@ -58,7 +58,8 @@ minutos_de() {  # estimacion (min) de entrenar 4000 pasos + inferir, para repart
     f2f) echo 50 ;; mf2f) echo 60 ;; saved) echo 40 ;; f2r) echo 180 ;;
     sass) echo 150 ;; nsp) echo 120 ;; tmbsn) echo 60 ;; swinia) echo 150 ;; selfformer) echo 120 ;;
     tap) echo 120 ;; pcst) echo 150 ;; stbn|rdrf) echo 120 ;;
-    mash) echo 120 ;; zskan) echo 60 ;; filter2noise) echo 90 ;; s2splus) echo 150 ;; *) echo 15 ;;
+    mash) echo 120 ;; zskan) echo 60 ;; filter2noise) echo 90 ;; s2splus) echo 150 ;;
+    n2v_fiel|structn2v_fiel|n2v2_fiel) echo 45 ;; noise2same_fiel) echo 60 ;; f2f_fiel) echo 50 ;; *) echo 15 ;;
   esac
 }
 
